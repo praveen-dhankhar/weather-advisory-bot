@@ -284,7 +284,6 @@ id by a lock, evicted least-recently-used beyond 500, and gone on restart.
 | [`backend/memory.py`](backend/memory.py) | per-session history + established facts, in process only |
 | [`backend/main.py`](backend/main.py) | FastAPI `POST /chat`, `GET /health` |
 | [`.streamlit/config.toml`](.streamlit/config.toml), [`.github/workflows/tests.yml`](.github/workflows/tests.yml) | public-deploy setting (no tracebacks for viewers), CI running the offline suite |
-| [`render.yaml`](render.yaml), [`.python-version`](.python-version) | the API as a Render web service, Python 3.12 |
 | [`frontend/app.py`](frontend/app.py) | Streamlit chat UI |
 | [`evals/`](evals/) | eval suite, recorded fixtures, `RESULTS.md`, generated `REPORT.md` |
 | [`DECISIONS.md`](DECISIONS.md) | what is code vs model, where each rule is enforced, honest gaps |
@@ -326,8 +325,7 @@ machinery - 10 nodes, one evaluator file - but the overrun is real and named her
 ## Deploying to Streamlit Community Cloud
 
 The public deployment is one process: Streamlit runs the graph itself (`EMBEDDED=1`),
-so a slow model turn never meets an HTTP proxy timeout and the UI needs no second
-service. The REST API deploys separately, to Render (next section).
+so a slow model turn never meets an HTTP proxy timeout and there is no second service.
 
 1. Push the repo to GitHub (public repo, public app).
 2. On [share.streamlit.io](https://share.streamlit.io): **Create app**, pick the repo,
@@ -375,36 +373,10 @@ path Cloud uses.
   suite on every push; Cloud redeploys `main` regardless, so that check is the gate to
   watch.
 
-## Deploying the API to Render
-
-The REST API (`POST /chat`, `GET /health`, `/docs`) deploys to Render from
-[`render.yaml`](render.yaml): one free web service running
-`uvicorn backend.main:app --host 0.0.0.0 --port $PORT`, with Python pinned to 3.12 by
-[`.python-version`](.python-version). It is the same graph the Streamlit app runs; the
-two keep separate sessions.
-
-1. Open <https://render.com/deploy?repo=https://github.com/praveen-dhankhar/weather-advisory-bot>
-   (or **New → Blueprint** in the Render dashboard, then pick this repo).
-2. Render reads `render.yaml` and asks for `NVIDIA_API_KEY`, the only secret. Every
-   other setting is in the file.
-3. Apply. Once the deploy is live, `GET /health` returns `{"status": "ok", ...}`:
-
-   ```bash
-   curl -s https://<service>.onrender.com/health
-   curl -s -X POST https://<service>.onrender.com/chat -H 'content-type: application/json' \
-     -d '{"message":"is it safe to cycle to work in Bhopal right now?"}'
-   ```
-
-- *Sleep.* A free service with no traffic for 15 minutes spins down; the next request
-  waits about a minute while it starts.
-- *Deploys.* `autoDeployTrigger: checksPass` redeploys `main` only after the GitHub
-  Actions suite passes.
-- *One process.* Session memory and the turn caps live in the process, so keep one
-  instance. No CORS middleware is installed (the Streamlit frontend calls the API
-  server-side); `/docs` is left on for reviewers.
-- *Pointing the UI at it.* The Cloud app runs the graph itself. To make it call this API
-  instead, set `EMBEDDED = "0"` and `BACKEND_URL = "https://<service>.onrender.com"` in
-  its secrets; a cold start then shows up as a slow first reply.
+Elsewhere: run `uvicorn backend.main:app --host 0.0.0.0 --port $PORT` and point the
+frontend's `BACKEND_URL` at it. Session memory and the caps live in the process, so run
+one worker. No CORS middleware is installed, because the Streamlit frontend calls the
+API server-side. FastAPI's `/docs` is left on for reviewers.
 
 ## Demo script (5-10 minutes)
 
