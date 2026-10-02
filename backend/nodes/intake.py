@@ -100,6 +100,24 @@ def resolve_activity(policy: Policy, *texts: Optional[str]) -> Optional[str]:
     return None
 
 
+def detect_audience(policy: Policy, message: str) -> list[str]:
+    """Audiences named in THIS message, from the hint phrases in ``_vocab.yaml``.
+
+    Audience selects which SOPs can apply at all, so a follow-up that names someone
+    new - "and for my elderly father?" - must not inherit the previous audience. A
+    prompt instruction alone was not enough: the model kept returning the established
+    audience, so the decision is made here, in code, and overrides the model.
+    """
+    lowered = f" {str(message).lower()} "
+    found = []
+    for audience, phrases in policy.audience_hints.items():
+        for phrase in sorted(phrases, key=len, reverse=True):
+            if re.search(rf"(?<![a-z]){re.escape(phrase)}(?![a-z])", lowered):
+                found.append(audience)
+                break
+    return found
+
+
 def normalise(intent: Intent, message: str, facts: dict[str, Any], policy: Policy) -> Intent:
     """Re-derive every control-flow field in code. The model only suggests."""
     activity = intent.activity if intent.activity in policy.activities else None
@@ -111,9 +129,14 @@ def normalise(intent: Intent, message: str, facts: dict[str, Any], policy: Polic
     if activity:
         tags |= set(policy.activities[activity]["tags"])
 
-    audience = [a for a in intent.audience if a in policy.audiences]
+    # Code first: whoever this message names wins over the model and over the session.
+    audience = detect_audience(policy, message)
     if not audience:
-        audience = list(facts.get("audience") or ["general"]) if intent.is_followup else ["general"]
+        audience = [a for a in intent.audience if a in policy.audiences and a != "general"]
+    if not audience:
+        audience = ["general"] if not intent.is_followup else list(
+            facts.get("audience") or ["general"]
+        )
     if "child" in audience:
         tags.add("with_children")
     if "elderly" in audience:

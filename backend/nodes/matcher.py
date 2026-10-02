@@ -218,15 +218,26 @@ def match_situational(
 # --------------------------------------------------------------------------- #
 # Conflict rule
 # --------------------------------------------------------------------------- #
-def rank(matched: list[MatchedSOP], policy: Policy) -> list[MatchedSOP]:
-    """Overrides first, then severity, then specificity, then id for stability.
+def _is_audience_specific(sop: SOP) -> bool:
+    """True when the SOP targets a named audience rather than the general population."""
+    if sop.applies_to is None:
+        return False
+    targeted = set(sop.applies_to.audience_any or []) - {"general"}
+    return bool(targeted)
 
-    Rationale in DECISIONS.md: safety-first ordering, nothing hidden, bounded
-    reply length.
+
+def rank(matched: list[MatchedSOP], policy: Policy) -> list[MatchedSOP]:
+    """Overrides first, then severity, then audience specificity, then condition
+    specificity, then id for stability.
+
+    Audience specificity sits above condition count on purpose: at equal severity,
+    guidance written for the person actually going outside beats generic guidance.
+    Full rationale and the rejected alternatives are in DECISIONS.md.
     """
     def key(m: MatchedSOP) -> tuple[Any, ...]:
         sop = policy.sops[m.sop_id]
-        return (sop.overrides, m.severity.rank, m.matched_conditions, m.matched_tags, m.sop_id)
+        return (sop.overrides, m.severity.rank, _is_audience_specific(sop),
+                m.matched_conditions, m.matched_tags, m.sop_id)
 
     return sorted(matched, key=key, reverse=True)
 

@@ -544,19 +544,85 @@ def test_guard_rejects_a_reply_that_grounds_nothing():
     assert guards.check_reply(fixed.NO_SOP_SENTENCE, [], set()).ok is True
 
 
-def test_followup_that_changes_the_audience_reruns_matching(bot):
-    """CHECKS the audit's safety defect: turn 2 names a different person, so the
-    vulnerable-group SOPs must take over from the general-adult ones.
-    PASS = audience becomes ['elderly'], the location is still inherited, an
-    SOP-VG-* is primary, and every surfaced id is cited."""
+@pytest.mark.parametrize(
+    "followup, audience, tag",
+    [("and for my elderly father?", "elderly", "with_elderly"),
+     ("what about the kids?", "child", "with_children")],
+)
+def test_followup_that_changes_the_audience_reruns_matching(bot, policy, followup, audience, tag):
+    """CHECKS the audit's safety defect: a follow-up naming a different person must
+    switch audience AND stop serving advice written for a healthy adult.
+    PASS = the audience changes, the location is still inherited, the primary SOP
+    targets that audience, no general-population-only SOP is surfaced, and every
+    surfaced id is cited."""
     bot.use("high_uv_midday")
     bot.ask("is it safe to cycle in Pune today?", session_id="aud")
-    second = bot.ask("and for my elderly father?", session_id="aud")
-    assert second["intent"].audience == ["elderly"], second["trace"]
+    second = bot.ask(followup, session_id="aud")
+    assert second["intent"].audience == [audience], second["trace"]
     assert second["intent"].location == "Pune", "location must still be inherited"
-    assert "with_elderly" in second["intent"].activity_tags
-    assert second["matched_sop_ids"][0].startswith("SOP-VG-"), second["matched_sop_ids"]
+    if tag:
+        assert tag in second["intent"].activity_tags
+    primary = policy.sops[second["matched_sop_ids"][0]]
+    assert audience in (primary.applies_to.audience_any or []), second["matched_sop_ids"]
+    for sop_id in second["matched_sop_ids"]:
+        allowed = policy.sops[sop_id].applies_to
+        targeted = set((allowed.audience_any or []) if allowed else [])
+        assert targeted != {"general"}, f"{sop_id} is written for a healthy adult only"
     assert set(second["matched_sop_ids"]) <= sop_ids_in(second["reply"])
+
+
+def test_followup_switching_to_the_pet_uses_the_dog_walk_sops(bot, policy):
+    """CHECKS the same audience switch where the activity is coherent: a dog-walk
+    question followed by "what about this evening?".
+    PASS = audience stays ['pet'] and the surfaced SOPs are the pet ones."""
+    bot.use("pleasant")
+    bot.ask("should I walk the dog in Pune today?", session_id="pet")
+    second = bot.ask("what about this evening?", session_id="pet")
+    assert second["intent"].audience == ["pet"]
+    assert second["intent"].activity == "dog_walk"
+    assert second["matched_sop_ids"], second["trace"]
+    primary = policy.sops[second["matched_sop_ids"][0]]
+    assert "pet" in (primary.applies_to.audience_any or []), second["matched_sop_ids"]
+    for sop_id in second["matched_sop_ids"]:
+        allowed = policy.sops[sop_id].applies_to
+        targeted = set((allowed.audience_any or []) if allowed else [])
+        assert targeted != {"general"}, f"{sop_id} is written for a healthy adult only"
+    assert "SOP-EX-07" not in second["matched_sop_ids"], "a dog walk is not a picnic"
+
+
+def test_incoherent_audience_switch_gives_no_guidance_rather_than_adult_advice(bot):
+    """CHECKS the honest edge of the audience fix: "same for the dog?" after a cycling
+    question has no policy behind it - no SOP covers cycling with a dog.
+    PASS = the bot says no SOP applies instead of handing over advice written for a
+    healthy adult, which is what it used to do."""
+    bot.use("pleasant")
+    bot.ask("is it safe to cycle in Pune today?", session_id="mix")
+    second = bot.ask("same for the dog?", session_id="mix")
+    assert second["intent"].audience == ["pet"]
+    assert second["branch"] == "no_match"
+    assert second["matched_sop_ids"] == []
+    assert fixed.NO_SOP_SENTENCE in second["reply"]
+    assert "healthy adult" not in second["reply"]
+
+
+def test_healthy_adult_sops_are_never_served_to_a_vulnerable_audience(bot, policy):
+    """CHECKS the other half of the same defect: SOP text that says "for a healthy
+    adult" must not reach a child, an older adult or an animal, in mild weather too.
+    PASS = for each non-general audience, no surfaced SOP is gated to general only,
+    and guidance is still given rather than silence."""
+    for message, audience in [
+        ("is it okay to take my toddler out for a walk in Pune today?", "child"),
+        ("my elderly father wants to walk in Pune today, is that okay?", "elderly"),
+        ("should I walk the dog in Pune today?", "pet"),
+    ]:
+        bot.use("pleasant")
+        out = bot.ask(message, session_id=f"vuln-{audience}")
+        assert out["intent"].audience == [audience], out["trace"]
+        assert out["branch"] == "compose", f"{audience} got no guidance at all: {out['branch']}"
+        for sop_id in out["matched_sop_ids"]:
+            allowed = policy.sops[sop_id].applies_to
+            targeted = set((allowed.audience_any or []) if allowed else [])
+            assert targeted != {"general"}, f"{sop_id} is for a healthy adult but was served to {audience}"
 
 
 def test_duplicate_yaml_key_is_rejected(tmp_path):
@@ -697,6 +763,59 @@ def test_exercise_coverage_has_no_temperature_gap(policy):
 
     hot = [rank for temp, rank in ladder if temp >= 30]
     assert hot == sorted(hot), f"severity must not fall as it gets hotter: {ladder}"
+
+
+AUDIENCE_PROFILES = [
+    ("general", ["outdoor", "exercise", "high_exertion"], "running"),
+    ("child", ["outdoor", "leisure", "with_children"], "park_visit"),
+    ("elderly", ["outdoor", "exercise", "leisure", "with_elderly"], "walking"),
+    ("pet", ["outdoor", "pet_walk", "leisure"], "dog_walk"),
+]
+
+
+@pytest.mark.parametrize("audience, tags, activity", AUDIENCE_PROFILES)
+def test_every_audience_has_unbroken_coverage_and_no_adult_leakage(policy, audience, tags, activity):
+    """CHECKS both halves of the audience defect at once, across the whole temperature
+    range: each audience must always get guidance, and must never be handed an SOP
+    whose text is written for a healthy adult.
+    PASS = at every temperature from -5 C to 40 C at least one SOP matches, no matched
+    SOP is gated to `general` only (except for the general audience itself), and
+    severity never falls as it gets hotter."""
+    base = json.loads((Path(__file__).parent / "fixtures" / "mild_pune.json").read_text())
+    ladder: list[tuple[float, int]] = []
+    for apparent in (-5.0, 0.0, 2.0, 5.0, 11.0, 20.0, 29.0, 30.0, 31.0, 33.0, 35.0, 39.0, 40.0):
+        payload = json.loads(json.dumps(base))
+        forecast = payload["forecast"]
+        hours = len(forecast["hourly"]["time"])
+        for key in ("apparent_temperature", "temperature_2m"):
+            forecast["hourly"][key] = [apparent] * hours
+            forecast["current"][key] = apparent
+        forecast["hourly"]["uv_index"] = [3.0] * hours
+        forecast["hourly"]["relative_humidity_2m"] = [50.0] * hours
+        forecast["current"]["relative_humidity_2m"] = 50.0
+        forecast["hourly"]["wind_speed_10m"] = [8.0] * hours
+        forecast["current"]["wind_speed_10m"] = 8.0
+        forecast["hourly"]["precipitation_probability"] = [5.0] * hours
+        snapshot = weather.snapshot_from_payload(
+            forecast, weather.location_from_geocode(payload["geocode"]), policy
+        )
+        intent = Intent(activity=activity, activity_tags=tags, audience=[audience],
+                        time_window="now", location="X")
+        matched, _ = matcher.match_numeric(
+            matcher.candidates(intent, policy), snapshot, intent, policy
+        )
+        assert matched, f"{audience}: nothing covers {apparent} C"
+        for match in matched:
+            allowed = policy.sops[match.sop_id].applies_to
+            targeted = set((allowed.audience_any or []) if allowed else [])
+            if audience != "general":
+                assert targeted != {"general"}, (
+                    f"{match.sop_id} is written for a healthy adult but matched for {audience}"
+                )
+        ladder.append((apparent, max(policy.sops[m.sop_id].severity.rank for m in matched)))
+
+    hot = [rank for temp, rank in ladder if temp >= 30]
+    assert hot == sorted(hot), f"{audience}: severity must not fall as it gets hotter: {ladder}"
 
 
 def test_weather_code_groups_are_defined_once(policy, tmp_path):

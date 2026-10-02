@@ -45,6 +45,7 @@ sops:
     kind: numeric
     applies_to:
       activity_tags_any: [high_exertion]
+      audience_any: [general]
     conditions:
       any_of:
         - apparent_temperature: {gte: 38}
@@ -85,6 +86,7 @@ sops:
     kind: numeric
     applies_to:
       activity_tags_any: [exercise]
+      audience_any: [general]
     conditions:
       all_of:
         - apparent_temperature: {between: [12, 30]}
@@ -123,7 +125,7 @@ sops:
     title: Picnic suitability
     kind: fuzzy
     applies_to:
-      activity_tags_any: [leisure]
+      activity_tags_any: [outdoor_meal]
     fuzzy_criteria: >-
       Judge whether the period suits a picnic: it must be dry (precipitation
       probability under about 20% and accumulated precipitation at or near zero),
@@ -144,6 +146,7 @@ sops:
     kind: numeric
     applies_to:
       activity_tags_any: [exercise, high_exertion]
+      audience_any: [general]
     conditions:
       all_of:
         - apparent_temperature: {gte: 30}
@@ -163,6 +166,7 @@ sops:
     kind: numeric
     applies_to:
       activity_tags_any: [exercise, high_exertion]
+      audience_any: [general]
     conditions:
       all_of:
         - apparent_temperature_min: {lte: 12}
@@ -183,6 +187,7 @@ sops:
     kind: numeric
     applies_to:
       activity_tags_any: [exercise, high_exertion]
+      audience_any: [general]
     conditions:
       apparent_temperature_min: {lte: 0}
     advice: >-
@@ -201,6 +206,7 @@ sops:
     kind: numeric
     applies_to:
       activity_tags_any: [exercise, high_exertion]
+      audience_any: [general]
     conditions:
       all_of:
         - apparent_temperature: {gte: 34}

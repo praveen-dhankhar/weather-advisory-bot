@@ -83,6 +83,7 @@ class Policy:
     activities: dict[str, dict[str, Any]]
     time_windows: dict[str, TimeWindowSpec]
     code_groups: dict[str, list[int]] = field(default_factory=dict)
+    audience_hints: dict[str, list[str]] = field(default_factory=dict)
     alias_to_activity: list[tuple[str, str]] = field(default_factory=list)
 
     @property
@@ -175,7 +176,9 @@ def _load_fields(
     return specs, derived, [str(d) for d in daily], groups
 
 
-def _load_vocab(path: Path) -> tuple[dict[str, str], list[str], dict[str, Any], dict[str, TimeWindowSpec]]:
+def _load_vocab(
+    path: Path,
+) -> tuple[dict[str, str], list[str], dict[str, Any], dict[str, TimeWindowSpec], dict[str, list[str]]]:
     raw = _read_yaml(path)
     if not isinstance(raw, dict):
         raise SOPConfigError(f"{path.name}: expected a top-level mapping")
@@ -215,7 +218,21 @@ def _load_vocab(path: Path) -> tuple[dict[str, str], list[str], dict[str, Any], 
         windows[name] = spec
     if "now" not in windows:
         raise SOPConfigError(f"{path.name}: a `now` time window is required")
-    return {str(k): str(v) for k, v in tags.items()}, [str(a) for a in audiences], activities, windows
+
+    hints_raw = raw.get("audience_hints") or {}
+    if not isinstance(hints_raw, dict):
+        raise SOPConfigError(f"{path.name}: `audience_hints` must be a mapping")
+    unknown = sorted(set(hints_raw) - set(audiences))
+    if unknown:
+        raise SOPConfigError(f"{path.name}: audience_hints names undefined audiences {unknown}")
+    hints: dict[str, list[str]] = {}
+    for name, phrases in hints_raw.items():
+        if not isinstance(phrases, list) or not phrases:
+            raise SOPConfigError(f"{path.name}: audience_hints[{name}] must be a non-empty list")
+        hints[str(name)] = [str(phrase).lower() for phrase in phrases]
+
+    return ({str(k): str(v) for k, v in tags.items()}, [str(a) for a in audiences],
+            activities, windows, hints)
 
 
 def _expand_groups(node: Any, groups: dict[str, list[int]], where: str) -> None:
@@ -292,7 +309,7 @@ def load_policy(sop_dir: Path | str = SOP_DIR) -> Policy:
     """Load sops/ into a validated :class:`Policy`, or raise ``SOPConfigError``."""
     sop_dir = Path(sop_dir)
     fields, derived, daily, groups = _load_fields(sop_dir / "_fields.yaml")
-    tags, audiences, activities, windows = _load_vocab(sop_dir / "_vocab.yaml")
+    tags, audiences, activities, windows, audience_hints = _load_vocab(sop_dir / "_vocab.yaml")
     known = set(fields) | set(derived)
     sops = _load_sops(sop_dir, known, set(tags), set(audiences), groups)
 
@@ -305,7 +322,7 @@ def load_policy(sop_dir: Path | str = SOP_DIR) -> Policy:
     return Policy(
         sops=sops, fields=fields, derived=derived, daily=daily, tags=tags, audiences=audiences,
         activities=activities, time_windows=windows, alias_to_activity=aliases,
-        code_groups=groups,
+        code_groups=groups, audience_hints=audience_hints,
     )
 
 

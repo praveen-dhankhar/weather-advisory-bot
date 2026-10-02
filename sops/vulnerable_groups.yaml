@@ -112,3 +112,104 @@ sops:
       apply broad-spectrum SPF 30+ twenty minutes before going out and again every
       two hours, and keep infants under six months out of direct sun entirely.
     cite_as: SOP-VG-06 (Sun protection for a child)
+
+  - id: SOP-VG-07
+    category: vulnerable_groups
+    severity: low
+    title: Settled conditions with a child outdoors
+    kind: numeric
+    applies_to:
+      audience_any: [child]
+    conditions:
+      all_of:
+        - apparent_temperature: {lt: 34}
+        - apparent_temperature_min: {gt: 8}
+    advice: >-
+      Nothing in the forecast argues against taking a child out: the feels-like
+      temperature is inside the band where neither heat nor cold is the problem.
+      Still bring more water than you think you need, keep a sun hat with you, and
+      plan a shaded spot to rest - children overheat faster than adults even on an
+      ordinary day. Check the UV note below if you are going out between 10:00
+      and 17:00.
+    cite_as: SOP-VG-07 (Settled conditions with a child outdoors)
+
+  - id: SOP-VG-08
+    category: vulnerable_groups
+    severity: low
+    title: Settled conditions for an older adult outdoors
+    kind: numeric
+    applies_to:
+      audience_any: [elderly]
+    conditions:
+      all_of:
+        - apparent_temperature: {lt: 32}
+        - apparent_temperature_min: {gt: 10}
+    advice: >-
+      Nothing in the forecast argues against an outing for an older adult: the
+      feels-like temperature is below the heat threshold and above the cold one.
+      Keep it short and unhurried anyway, take water and have them drink on a
+      schedule rather than on thirst, choose even ground and a route with somewhere
+      to sit, and take a layer in case it turns. Do not treat guidance written for
+      a healthy adult as applying to them.
+    cite_as: SOP-VG-08 (Settled conditions for an older adult outdoors)
+
+  - id: SOP-VG-09
+    category: vulnerable_groups
+    severity: low
+    title: Settled conditions for walking a dog
+    kind: numeric
+    applies_to:
+      audience_any: [pet]
+      activity_tags_any: [pet_walk]
+    conditions:
+      all_of:
+        - temperature_2m: {lt: 28}
+        - temperature_2m: {gt: 2}
+    advice: >-
+      Reasonable conditions for a dog walk: the air is below the range where paved
+      ground starts to burn paw pads and above the range where small or short-coated
+      dogs get cold quickly. Still check the pavement with the back of your hand
+      before a long stretch of asphalt, carry water for the dog as well as yourself,
+      and remember a dog cannot tell you it has had enough - watch for heavy panting
+      or lagging behind.
+    cite_as: SOP-VG-09 (Settled conditions for walking a dog)
+
+  - id: SOP-VG-10
+    category: vulnerable_groups
+    severity: moderate
+    title: Cold risk for a dog
+    kind: numeric
+    applies_to:
+      audience_any: [pet]
+      activity_tags_any: [pet_walk]
+    conditions:
+      temperature_2m: {lte: 2}
+    advice: >-
+      Keep a dog walk very short at or below 2 C. Small breeds, short-coated breeds,
+      puppies and old dogs lose heat fast and can become hypothermic well before a
+      person feels properly cold. Use a coat for a thin-coated dog, avoid grit and
+      road salt which burns paws and is toxic if licked off, rinse and dry the paws
+      afterwards, and go straight home if the dog lifts its paws, shivers or stops
+      wanting to walk.
+    cite_as: SOP-VG-10 (Cold risk for a dog)
+
+  - id: SOP-VG-11
+    category: vulnerable_groups
+    severity: moderate
+    title: Warm pavement caution for a dog
+    kind: numeric
+    applies_to:
+      audience_any: [pet]
+      activity_tags_any: [pet_walk]
+    conditions:
+      all_of:
+        - temperature_2m: {gte: 28}
+        - temperature_2m: {lt: 32}
+    advice: >-
+      Between 28 C and 32 C, walk the dog but change where and when. Asphalt in sun
+      is already well hotter than the air at these temperatures. Keep to grass and
+      shade, test the pavement with the back of your hand for seven seconds before
+      any long paved stretch, cut the distance, carry water and offer it often, and
+      go out early or after sunset instead of the middle of the day. Heavy panting,
+      drooling or lagging behind means stop and cool the dog down.
+    cite_as: SOP-VG-11 (Warm pavement caution for a dog)

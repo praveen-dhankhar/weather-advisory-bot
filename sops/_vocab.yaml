@@ -5,6 +5,22 @@ version: 1
 # Who the advice is about. SOP `applies_to.audience_any` draws from this list.
 audiences: [general, child, elderly, pet]
 
+# Phrases that name who the advice is for. The intake node matches these against the
+# CURRENT message in code (backend/nodes/intake.py::detect_audience) and lets the
+# result win over both the model's guess and the session's established facts.
+# Audience decides which SOPs can apply at all - a child heat threshold is 2 C lower
+# than an adult's - so it is too safety-critical to leave to a prompt.
+audience_hints:
+  child:
+    [kid, kids, child, children, toddler, baby, babies, infant, son, daughter,
+     my boy, my girl, school run, pram, stroller, little one, little ones]
+  elderly:
+    [elderly, elderly father, elderly mother, grandmother, grandfather, grandma,
+     grandpa, granny, nana, senior, seniors, old age, older adult, my mother,
+     my father, my mum, my mom, my dad, aged parent, pensioner]
+  pet:
+    [dog, dogs, puppy, pup, pet, pets, cat, my labrador, the labrador]
+
 # Tag vocabulary. The description is shown to the intake LLM so it can tag a
 # free-text activity. SOP `applies_to.activity_tags_any` draws from these keys.
 tags:
@@ -14,7 +30,8 @@ tags:
   two_wheeler: cycle, scooter or motorbike - exposed to wind and rain
   commute: travelling to work, school or an appointment
   travel: any journey by road, including driving and public transport
-  leisure: unhurried outdoor leisure (picnic, park visit, sightseeing)
+  leisure: unhurried outdoor leisure (a walk, a park visit, sightseeing)
+  outdoor_meal: eating or laying out food outdoors (picnic, barbecue)
   prolonged_sun: 30+ minutes of direct sun exposure
   water: in or on water
   pet_walk: walking an animal on paved or open ground
@@ -45,7 +62,7 @@ activities:
     tags: [outdoor, exercise, high_exertion, prolonged_sun]
   picnic:
     aliases: [picnic, picnic lunch, barbecue, bbq, eat outside, lunch in the park]
-    tags: [outdoor, leisure, prolonged_sun]
+    tags: [outdoor, leisure, outdoor_meal, prolonged_sun]
   park_visit:
     aliases: [park, playground, take my kid out, take my child out, take my toddler out, play outside]
     tags: [outdoor, leisure, with_children]

@@ -19,13 +19,6 @@ from backend.loader import get_policy
 from backend.nodes import composer
 from backend.nodes.intake import resolve_activity
 
-AUDIENCE_HINTS = {
-    "child": ["kid", "child", "toddler", "baby", "infant", "son", "daughter", "children", "school"],
-    "elderly": ["elderly", "grandmother", "grandfather", "grandma", "grandpa", "old age", "senior",
-                "my mother", "my father", "aged parent"],
-    "pet": ["dog", "puppy", "pet", "cat"],
-}
-
 WINDOW_HINTS = [
     ("tomorrow_morning", ["tomorrow morning"]),
     ("tomorrow_afternoon", ["tomorrow afternoon"]),
@@ -67,7 +60,7 @@ def _intake(user: str) -> str:
         # whole-phrase match: "afternoon" must not match the "noon" hint
         return re.search(rf"(?<![a-z]){re.escape(phrase)}(?![a-z])", lowered) is not None
 
-    audience = [name for name, hints in AUDIENCE_HINTS.items() if any(has(h) for h in hints)]
+    audience = [name for name, hints in policy.audience_hints.items() if any(has(h) for h in hints)]
     window = next((name for name, hints in WINDOW_HINTS if any(has(h) for h in hints)), "now")
     is_followup = bool(re.match(r"^\s*(what about|and|how about|ok but what about)\b", lowered)) or (
         activity is None and location is None and window != "now"
