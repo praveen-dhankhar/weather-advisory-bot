@@ -19,7 +19,7 @@ import pytest
 from backend import conditions, guards, llm, weather
 from backend.loader import SOP_DIR, get_policy, load_policy
 from backend.models import Intent, LocationAmbiguous, SOPConfigError
-from backend.nodes import fixed, matcher
+from backend.nodes import fixed, intake, matcher
 from conftest import load_fixture, numbers_in, sop_ids_in
 
 
@@ -571,6 +571,50 @@ def test_followup_that_changes_the_audience_reruns_matching(bot, policy, followu
     assert set(second["matched_sop_ids"]) <= sop_ids_in(second["reply"])
 
 
+@pytest.mark.parametrize("message, expected", [
+    ("and for my elderly father?", ["elderly"]),
+    ("what about the kids?", ["child"]),
+    ("same for the dog?", ["pet"]),
+    ("my grandmother wants to sit outside", ["elderly"]),
+    ("is it safe to cycle to work today?", []),
+    ("what about this evening instead?", []),
+])
+def test_detect_audience_reads_the_current_message(policy, message, expected):
+    """CHECKS the code-side audience detection in isolation, against the hint phrases
+    in _vocab.yaml.
+    PASS = the audiences named in the message, and nothing when none is named - a
+    message with no person in it must not invent one."""
+    assert intake.detect_audience(policy, message) == expected
+
+
+def test_code_overrides_the_model_when_it_keeps_the_old_audience(bot, policy):
+    """CHECKS the exact failure seen against the real model: it returned the
+    established audience on a follow-up that named someone new. The fix must not
+    depend on the model getting it right.
+    PASS = even when the intake model insists on audience ["general"], the audience
+    becomes ['elderly'] and the surfaced SOPs target an older adult."""
+    from backend.fake_llm import fake_llm
+
+    def stubborn(system: str, user: str) -> str:
+        if system.startswith("JOB: intake"):
+            return json.dumps({
+                "is_outdoor_safety_question": True, "location": "Pune",
+                "activity": "walking", "activity_raw": "walk",
+                "activity_tags": ["outdoor", "leisure", "exercise"],
+                "audience": ["general"],  # the model gets it wrong, on purpose
+                "time_window": "now", "is_followup": True,
+            })
+        return fake_llm(system, user)
+
+    bot.use("high_uv_midday")
+    bot.use_llm(stubborn)
+    out = bot.ask("and for my elderly father?", session_id="stubborn")
+    assert out["intent"].audience == ["elderly"], out["trace"]
+    assert "with_elderly" in out["intent"].activity_tags
+    primary = policy.sops[out["matched_sop_ids"][0]]
+    assert "elderly" in (primary.applies_to.audience_any or []), out["matched_sop_ids"]
+
+
 def test_followup_switching_to_the_pet_uses_the_dog_walk_sops(bot, policy):
     """CHECKS the same audience switch where the activity is coherent: a dog-walk
     question followed by "what about this evening?".
@@ -806,12 +850,19 @@ def test_every_audience_has_unbroken_coverage_and_no_adult_leakage(policy, audie
         )
         assert matched, f"{audience}: nothing covers {apparent} C"
         for match in matched:
-            allowed = policy.sops[match.sop_id].applies_to
+            sop = policy.sops[match.sop_id]
+            if audience == "general":
+                continue
+            allowed = sop.applies_to
             targeted = set((allowed.audience_any or []) if allowed else [])
-            if audience != "general":
-                assert targeted != {"general"}, (
-                    f"{match.sop_id} is written for a healthy adult but matched for {audience}"
-                )
+            assert targeted != {"general"}, (
+                f"{sop.id} is gated to the general population but matched for {audience}"
+            )
+            # the real guarantee: text written for a healthy adult must not reach them,
+            # however applies_to happens to be spelled
+            assert "healthy adult" not in sop.advice.lower(), (
+                f"{sop.id} says 'healthy adult' in its advice but matched for {audience}"
+            )
         ladder.append((apparent, max(policy.sops[m.sop_id].severity.rank for m in matched)))
 
     hot = [rank for temp, rank in ladder if temp >= 30]
