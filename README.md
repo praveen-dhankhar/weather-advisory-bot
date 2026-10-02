@@ -4,6 +4,11 @@ A chat bot that answers outdoor-activity safety questions - *"is it safe to cycl
 work today?"*, *"should I take my kid to the park?"*, *"good day for a picnic?"* -
 from live [Open-Meteo](https://open-meteo.com) data and a set of written SOPs.
 
+**Live demo:** <https://weather-advisory-bot-xfws5hvcfwfjzogjsjpwkg.streamlit.app> -
+deployed on Streamlit Community Cloud ([how](#deploying-to-streamlit-community-cloud)).
+A reply takes from under a minute to about two on the free model tier. After 12 hours
+without visitors the app sleeps; opening the link wakes it.
+
 **The bot never invents safety advice.** Every reply is built from a Standard
 Operating Procedure stored as YAML in [`sops/`](sops/) and cites that SOP's id. If
 no SOP applies, it says so. Code decides which SOPs apply; the LLM reads the question,
