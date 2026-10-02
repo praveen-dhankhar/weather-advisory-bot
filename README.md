@@ -9,6 +9,11 @@ deployed on Streamlit Community Cloud ([how](#deploying-to-streamlit-community-c
 A reply takes from under a minute to about two on the free model tier. After 12 hours
 without visitors the app sleeps; opening the link wakes it.
 
+**Walkthrough video (9 min):**
+<https://drive.google.com/file/d/14mKiN3qDCI1Uv2p4Hpt4EUW8xj3ESCMY/view?usp=sharing> - the
+live demo (a grounded answer, follow-up memory, a fuzzy SOP, no match, prompt injection, an
+unknown place, the weather API down) and a code tour.
+
 **The bot never invents safety advice.** Every reply is built from a Standard
 Operating Procedure stored as YAML in [`sops/`](sops/) and cites that SOP's id. If
 no SOP applies, it says so. Code decides which SOPs apply; the LLM reads the question,
