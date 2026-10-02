@@ -19,6 +19,19 @@ class LocationUnresolved(Exception):
     """Geocoding returned nothing usable for the requested place name."""
 
 
+class LocationAmbiguous(Exception):
+    """Geocoding returned candidates that are not clearly the place asked for.
+
+    Carries the candidate labels so the bot can ask which one was meant instead of
+    silently picking one in another country.
+    """
+
+    def __init__(self, query: str, candidates: list[str]) -> None:
+        self.query = query
+        self.candidates = candidates
+        super().__init__(f"{query!r} could be {', '.join(candidates)}")
+
+
 class WeatherUnavailable(Exception):
     """Open-Meteo could not be reached, or returned an unusable payload."""
 
@@ -220,6 +233,8 @@ class GraphState(TypedDict, total=False):
     matched_sop_ids: list[str]
     situational_ids: list[str]
     error: Optional[str]
+    clarify_question: Optional[str]
+    failed_before_fetch: bool
     branch: Branch
     reply: str
     guard_report: dict[str, Any]

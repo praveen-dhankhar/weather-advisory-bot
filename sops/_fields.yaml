@@ -82,6 +82,19 @@ fields:
     unit: "m"
     aggregate: min
 
+# Named WMO weather-code groups. Defined ONCE here and referenced by name from both
+# SOP conditions (`weather_code: {in_group: heavy_rain}`) and derived-signal configs
+# (`codes_group: heavy_rain`). The loader expands the name at startup, so a group can
+# never drift between two definitions.
+code_groups:
+  thunderstorm: [95, 96, 99]
+  fog: [45, 48]
+  heavy_rain: [65, 67, 82]
+  # anything that counts as a heavy-rain *system* hour, rain or storm
+  heavy_rain_or_storm: [65, 67, 82, 95, 96, 99]
+  # codes that rule out "nothing argues against this journey"
+  bad_driving: [45, 48, 65, 67, 82, 95, 96, 99]
+
 # Daily values fetched for context only (shown in the UI, not used by SOPs).
 daily: [uv_index_max, temperature_2m_max, temperature_2m_min, precipitation_sum, weather_code]
 
@@ -111,6 +124,8 @@ derived:
   heavy_rain_hours_next_12h:
     unit: "hours"
     description: hours in the next 12 with a heavy-rain or thunderstorm WMO code
+    hours: 12
+    codes_group: heavy_rain_or_storm
   min_visibility_next_6h:
     unit: "m"
     description: lowest visibility in the next 6 hours

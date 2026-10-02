@@ -68,7 +68,7 @@ sops:
     applies_to:
       activity_tags_any: [outdoor]
     conditions:
-      weather_code: {in: [95, 96, 99]}
+      weather_code: {in_group: thunderstorm}
     advice: >-
       Stay indoors. The forecast carries thunderstorm codes for this period.
       Lightning kills people who are caught in the open, under isolated trees, on
@@ -87,7 +87,7 @@ sops:
       activity_tags_any: [exercise]
     conditions:
       all_of:
-        - apparent_temperature: {between: [12, 28]}
+        - apparent_temperature: {between: [12, 30]}
         - wind_speed_10m: {lt: 25}
         - precipitation_probability: {lt: 25}
         - uv_index: {lt: 6}
@@ -147,11 +147,70 @@ sops:
     conditions:
       all_of:
         - apparent_temperature: {gte: 30}
-        - apparent_temperature: {lt: 38}
+        - apparent_temperature: {lt: 34}
     advice: >-
-      Warm, not dangerous, for a healthy adult. Between a feels-like 30 C and 38 C
+      Warm, not dangerous, for a healthy adult. Between a feels-like 30 C and 34 C
       you can exercise outdoors, but drop the pace by a notch, drink 500-700 ml of
       water per hour of effort, wear light breathable clothing, and prefer a shaded
       or tree-lined route. Shift the session earlier or later if you can. Stop if
       you get a headache, feel light-headed or stop sweating.
     cite_as: SOP-EX-08 (Warm-weather exercise caution)
+
+  - id: SOP-EX-09
+    category: outdoor_exercise
+    severity: low
+    title: Cool-weather exercise
+    kind: numeric
+    applies_to:
+      activity_tags_any: [exercise, high_exertion]
+    conditions:
+      all_of:
+        - apparent_temperature_min: {lte: 12}
+        - apparent_temperature_min: {gt: 0}
+    advice: >-
+      Cool enough to need preparation, not to cancel. Below a feels-like 12 C, warm
+      up for longer than usual before any hard effort, because cold muscles strain
+      more easily. Use thin layers you can shed rather than one heavy top, cover
+      your hands and ears, and keep drinking even though you will not feel thirsty.
+      If you have asthma or a heart condition, cold air is a known trigger - keep
+      the intensity easy and breathe through a buff or scarf.
+    cite_as: SOP-EX-09 (Cool-weather exercise)
+
+  - id: SOP-EX-10
+    category: outdoor_exercise
+    severity: moderate
+    title: Freezing conditions during exercise
+    kind: numeric
+    applies_to:
+      activity_tags_any: [exercise, high_exertion]
+    conditions:
+      apparent_temperature_min: {lte: 0}
+    advice: >-
+      Treat a feels-like temperature at or below freezing as a reason to shorten the
+      session or move it indoors. Exposed skin is at risk of frostnip within half an
+      hour at these values, and wind makes it faster. If you do go out, cover every
+      patch of skin, keep the route close to shelter so you can cut it short, tell
+      someone when you expect to be back, and turn around at the first sign of
+      numbness, clumsiness or shivering you cannot stop.
+    cite_as: SOP-EX-10 (Freezing conditions during exercise)
+
+  - id: SOP-EX-11
+    category: outdoor_exercise
+    severity: moderate
+    title: Hot-weather exercise restraint
+    kind: numeric
+    applies_to:
+      activity_tags_any: [exercise, high_exertion]
+    conditions:
+      all_of:
+        - apparent_temperature: {gte: 34}
+        - apparent_temperature: {lt: 38}
+    advice: >-
+      This is hot enough to change the plan, not just the pace. Between a feels-like
+      34 C and 38 C, cut the session to roughly half its usual length and intensity,
+      or move it to before 07:00 or after sunset. Drink 500-700 ml of water per hour
+      and add electrolytes if you are out for more than an hour. Stay on shaded
+      routes and never run a hard or timed effort. Stop at once for a headache,
+      nausea, dizziness, cramping or skin that has gone dry - those are heat-illness
+      signs, not fitness problems.
+    cite_as: SOP-EX-11 (Hot-weather exercise restraint)

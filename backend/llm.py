@@ -128,9 +128,26 @@ def chat_json(system: str, user: str, temperature: float = 0.0) -> dict[str, Any
     return parsed
 
 
+# A question sits at the start or the end of a long message, never in the middle of
+# 5,000 characters of padding - so keep both ends and drop the middle.
+MAX_UNTRUSTED_CHARS = 2000
+_HEAD_SHARE = 0.6
+
+
 def untrusted_block(text: str, tag: str = "user_message") -> str:
-    """Wrap user text as clearly-marked data. Closing tags inside it are defanged."""
+    """Wrap user text as clearly-marked data, truncated to a bounded length.
+
+    Closing tags inside it are defanged so the block cannot be escaped, and an
+    over-long message is cut head-and-tail with a visible marker rather than
+    rejected - the question is usually at one end or the other.
+    """
     safe = str(text).replace(f"</{tag}>", f"<_/{tag}>")
+    if len(safe) > MAX_UNTRUSTED_CHARS:
+        head = int(MAX_UNTRUSTED_CHARS * _HEAD_SHARE)
+        tail = MAX_UNTRUSTED_CHARS - head
+        dropped = len(safe) - MAX_UNTRUSTED_CHARS
+        safe = (f"{safe[:head]}\n[... {dropped} characters removed from the middle ...]\n"
+                f"{safe[-tail:]}")
     return f"<{tag}>\n{safe}\n</{tag}>"
 
 

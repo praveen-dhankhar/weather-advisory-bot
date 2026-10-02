@@ -9,15 +9,16 @@ Mode B (--run-live) adds the tests marked `live`, which call Open-Meteo for real
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 import httpx
 import pytest
 
-from backend import conditions, llm, weather
-from backend.loader import SOP_DIR, load_policy
-from backend.models import Intent, SOPConfigError
+from backend import conditions, guards, llm, weather
+from backend.loader import SOP_DIR, get_policy, load_policy
+from backend.models import Intent, LocationAmbiguous, SOPConfigError
 from backend.nodes import fixed, matcher
 from conftest import load_fixture, numbers_in, sop_ids_in
 
@@ -61,6 +62,10 @@ def test_high_wind_cycling_matches_sop_ex_01(bot):
     assert out["window"].values["wind_speed_10m"] == 48.0
     assert 48.0 in numbers_in(out["reply"])
     assert out["guard_report"]["ok"] is True
+    # a normal answer must come from the composer, not from the guard's safety net:
+    # if the composer stopped using the SOP text, the fallback would hide it
+    assert out["guard_report"].get("fell_back") is not True, out["trace"]
+    assert any("compose: llm reply" in line for line in out["trace"]), out["trace"]
 
 
 def test_high_uv_midday_exercise_matches_sop_ex_02(bot):
@@ -498,3 +503,359 @@ def test_fuzzy_sops_match_on_a_comfortable_day(bot):
     assert {m.sop_id for m in fuzzy} >= {"SOP-EX-07"}
     assert out["window"].values["temperature_2m"] == 23.0
     assert out["guard_report"]["ok"] is True
+
+
+# =========================================================================== #
+# 8. Regression tests for the defects found in the audit
+# =========================================================================== #
+def test_guard_rejects_an_invented_number_on_its_own():
+    """CHECKS guard check (b) IN ISOLATION: the reply cites a real matched SOP and no
+    bogus ids, but states a figure with no source.
+    PASS = the guard fails it and names that number. Must fail if only `_is_allowed`
+    is weakened - the combined guard test did not catch that."""
+    allowed = guards.allowed_numbers({"wind_speed_10m": 45.2}, "wind at or above 40 km/h")
+    report = guards.check_reply("Wind is 22 km/h so go ahead [SOP-EX-01].", ["SOP-EX-01"], allowed)
+    assert report.ok is False
+    assert report.bad_numbers == ["22.0"], report.bad_numbers
+    assert report.bad_ids == []
+
+
+def test_guard_rejects_an_unmatched_sop_id_on_its_own():
+    """CHECKS guard check (a) IN ISOLATION: every figure is legitimate, but the reply
+    cites an SOP that did not match.
+    PASS = the guard fails it and names the id. Must fail if only the id comparison
+    is weakened."""
+    allowed = guards.allowed_numbers({"wind_speed_10m": 45.2})
+    report = guards.check_reply("Wind is 45.2 km/h, fine to ride [SOP-EX-99].", ["SOP-EX-01"], allowed)
+    assert report.ok is False
+    assert report.bad_ids == ["SOP-EX-99"]
+    assert report.bad_numbers == []
+
+
+def test_guard_rejects_a_reply_that_grounds_nothing():
+    """CHECKS guard check (c) IN ISOLATION: no invented numbers, no bogus ids, but the
+    reply neither cites an SOP nor states that none applies.
+    PASS = the guard fails it for exactly that reason, and the explicit no-guidance
+    sentence is accepted as the alternative. Must fail if only check (c) is removed."""
+    report = guards.check_reply("Looks fine to me, enjoy.", ["SOP-EX-01"], set())
+    assert report.ok is False
+    assert report.bad_ids == [] and report.bad_numbers == []
+    assert any("neither cites an SOP" in problem for problem in report.problems), report.problems
+    assert guards.check_reply(fixed.NO_SOP_SENTENCE, [], set()).ok is True
+
+
+def test_followup_that_changes_the_audience_reruns_matching(bot):
+    """CHECKS the audit's safety defect: turn 2 names a different person, so the
+    vulnerable-group SOPs must take over from the general-adult ones.
+    PASS = audience becomes ['elderly'], the location is still inherited, an
+    SOP-VG-* is primary, and every surfaced id is cited."""
+    bot.use("high_uv_midday")
+    bot.ask("is it safe to cycle in Pune today?", session_id="aud")
+    second = bot.ask("and for my elderly father?", session_id="aud")
+    assert second["intent"].audience == ["elderly"], second["trace"]
+    assert second["intent"].location == "Pune", "location must still be inherited"
+    assert "with_elderly" in second["intent"].activity_tags
+    assert second["matched_sop_ids"][0].startswith("SOP-VG-"), second["matched_sop_ids"]
+    assert set(second["matched_sop_ids"]) <= sop_ids_in(second["reply"])
+
+
+def test_duplicate_yaml_key_is_rejected(tmp_path):
+    """CHECKS the silent-data-loss defect: a second `sops:` block in one file, which
+    plain yaml.safe_load resolves by discarding every SOP above it.
+    PASS = SOPConfigError naming the file and the duplicated key."""
+    import shutil
+
+    target = tmp_path / "sops"
+    target.mkdir()
+    for name in ("_vocab.yaml", "_fields.yaml"):
+        shutil.copy(SOP_DIR / name, target / name)
+    entry = (
+        "  - id: SOP-ZZ-{n}\n"
+        "    category: travel\n    severity: low\n    title: t{n}\n    kind: numeric\n"
+        "    advice: a\n    cite_as: c\n    conditions: {{wind_speed_10m: {{gt: {n}}}}}\n"
+    )
+    (target / "two_blocks.yaml").write_text(
+        "sops:\n" + entry.format(n=1) + "sops:\n" + entry.format(n=2)
+    )
+    with pytest.raises(SOPConfigError) as exc:
+        load_policy(target)
+    assert "two_blocks.yaml" in str(exc.value)
+    assert "duplicate key" in str(exc.value)
+
+
+class _FakeGeoResponse:
+    """A geocoding response stub, so the ambiguity rule is tested without the network."""
+
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+        self.status_code = 200
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def test_ambiguous_place_asks_instead_of_guessing(bot, monkeypatch):
+    """CHECKS the "Goa -> Genoa, Italy" defect: same-named places in different
+    countries, none of them dominant, must produce a question.
+    PASS = LocationAmbiguous from geocode(), branch `clarify`, the candidates named in
+    the reply, no SOPs and no forecast figures."""
+    payload = {"results": [
+        {"name": "Goa", "country": "Philippines", "admin1": "Bicol", "latitude": 13.7,
+         "longitude": 123.5, "population": 20000},
+        {"name": "Goa", "country": "Spain", "admin1": "Galicia", "latitude": 43.3,
+         "longitude": -7.5, "population": 500},
+    ]}
+    monkeypatch.setattr(httpx.Client, "get", lambda *_a, **_k: _FakeGeoResponse(payload))
+    with pytest.raises(LocationAmbiguous) as exc:
+        weather.geocode("Goa")
+    assert len(exc.value.candidates) == 2
+
+    out = bot.ask("good day for a picnic in Goa tomorrow?")
+    assert out["branch"] == "clarify"
+    assert out["matched_sop_ids"] == []
+    assert "Philippines" in out["reply"] and "Spain" in out["reply"]
+    assert "No standard operating procedure was applied" in out["reply"]
+
+
+def test_dominant_city_still_resolves_silently(monkeypatch):
+    """CHECKS that the ambiguity rule did not break ordinary questions: a major city
+    sharing its name with a hamlet abroad must resolve with no question asked.
+    PASS = the populous match is returned."""
+    payload = {"results": [
+        {"name": "Pune", "country": "India", "admin1": "Maharashtra", "latitude": 18.5,
+         "longitude": 73.8, "population": 2935000},
+        {"name": "Pune", "country": "Timor-Leste", "admin1": "Oecusse", "latitude": -9.2,
+         "longitude": 124.3, "population": 300},
+    ]}
+    monkeypatch.setattr(httpx.Client, "get", lambda *_a, **_k: _FakeGeoResponse(payload))
+    assert weather.geocode("Pune").country == "India"
+
+
+def test_typo_is_not_silently_resolved_to_another_country(monkeypatch):
+    """CHECKS the "bhopl -> Bhopla, Bangladesh" half of the same defect: when nothing
+    matches the name as typed, the bot must not pick the nearest spelling.
+    PASS = LocationAmbiguous listing what was found."""
+    payload = {"results": [
+        {"name": "Bhopla", "country": "Bangladesh", "admin1": "Rangpur", "latitude": 26.0,
+         "longitude": 88.5, "population": 1200},
+    ]}
+    monkeypatch.setattr(httpx.Client, "get", lambda *_a, **_k: _FakeGeoResponse(payload))
+    with pytest.raises(LocationAmbiguous) as exc:
+        weather.geocode("bhopl")
+    assert "Bhopla, Rangpur, Bangladesh" in exc.value.candidates
+
+
+def test_intake_failure_does_not_blame_the_forecast(bot):
+    """CHECKS the dishonest-reason defect: when the intake model returns unusable
+    output the forecast was never attempted, so the reply must not claim otherwise.
+    PASS = branch `fail` with the intake wording and no forecast excuse."""
+    bot.use("mild_pune")
+    bot.use_llm(
+        lambda system, user: "Sure! Cycling is fine today." if system.startswith("JOB: intake") else ""
+    )
+    out = bot.ask("is it safe to cycle in Pune today?")
+    assert out["branch"] == "fail"
+    assert "could not understand that request" in out["reply"]
+    assert "could not get the forecast data" not in out["reply"]
+    assert out["matched_sop_ids"] == []
+
+
+def test_exercise_coverage_has_no_temperature_gap(policy):
+    """CHECKS the two coverage holes: apparent 28-30 C matched no exercise SOP, and
+    anything at or below 12 C matched none at all.
+    PASS = every temperature from -5 C to 40 C yields at least one numeric exercise
+    SOP, and severity never falls as it gets hotter."""
+    base = json.loads((Path(__file__).parent / "fixtures" / "mild_pune.json").read_text())
+    intent = Intent(activity="running", activity_tags=["outdoor", "exercise", "high_exertion"],
+                    audience=["general"], time_window="now", location="X")
+    ladder: list[tuple[float, int]] = []
+    for apparent in (-5.0, 0.0, 3.0, 10.0, 12.0, 15.0, 25.0, 28.5, 29.0, 29.9, 30.0,
+                     33.9, 34.0, 37.0, 38.0, 40.0):
+        payload = json.loads(json.dumps(base))
+        forecast = payload["forecast"]
+        hours = len(forecast["hourly"]["time"])
+        for key in ("apparent_temperature", "temperature_2m"):
+            forecast["hourly"][key] = [apparent] * hours
+            forecast["current"][key] = apparent
+        forecast["hourly"]["uv_index"] = [1.0] * hours
+        forecast["hourly"]["relative_humidity_2m"] = [50.0] * hours
+        forecast["current"]["relative_humidity_2m"] = 50.0
+        forecast["hourly"]["wind_speed_10m"] = [8.0] * hours
+        forecast["current"]["wind_speed_10m"] = 8.0
+        forecast["hourly"]["precipitation_probability"] = [5.0] * hours
+        snapshot = weather.snapshot_from_payload(
+            forecast, weather.location_from_geocode(payload["geocode"]), policy
+        )
+        matched, _ = matcher.match_numeric(
+            matcher.candidates(intent, policy), snapshot, intent, policy
+        )
+        assert matched, f"no exercise SOP covers an apparent temperature of {apparent} C"
+        ladder.append((apparent, max(policy.sops[m.sop_id].severity.rank for m in matched)))
+
+    hot = [rank for temp, rank in ladder if temp >= 30]
+    assert hot == sorted(hot), f"severity must not fall as it gets hotter: {ladder}"
+
+
+def test_weather_code_groups_are_defined_once(policy, tmp_path):
+    """CHECKS the duplicated-policy defect: "heavy rain" was a literal list in both
+    conditions.py and travel.yaml.
+    PASS = the groups live in _fields.yaml, SOP conditions are expanded from the group
+    name at load time, the derived signal reads the same list, no code list survives
+    in Python, and an unknown group name fails loudly."""
+    import shutil
+
+    assert "heavy_rain_or_storm" in policy.code_groups
+    assert policy.derived["heavy_rain_hours_next_12h"]["codes"] == \
+        policy.code_groups["heavy_rain_or_storm"]
+    assert policy.sops["SOP-EX-04"].conditions["weather_code"]["in"] == \
+        policy.code_groups["thunderstorm"]
+    assert not hasattr(conditions, "HEAVY_RAIN_CODES"), "code list must not live in Python"
+
+    target = tmp_path / "sops"
+    target.mkdir()
+    for path in SOP_DIR.glob("*.yaml"):
+        shutil.copy(path, target / path.name)
+    (target / "bad_group.yaml").write_text(
+        "sops:\n  - id: SOP-ZZ-09\n    category: travel\n    severity: low\n    title: t\n"
+        "    kind: numeric\n    advice: a\n    cite_as: c\n"
+        "    conditions: {weather_code: {in_group: blizzard_of_doom}}\n"
+    )
+    with pytest.raises(SOPConfigError) as exc:
+        load_policy(target)
+    assert "blizzard_of_doom" in str(exc.value) and "bad_group.yaml" in str(exc.value)
+
+
+def test_long_message_is_truncated_not_rejected(bot):
+    """CHECKS the 5,000-character defect, which used to return HTTP 422 and no answer.
+    PASS = the prompt block is bounded, both ends survive, the removal is marked, the
+    delimiter still closes, and the graph answers normally."""
+    padding = "I enjoy writing long emails about nothing. " * 150
+    message = f"Is it safe to cycle in Pune today? {padding} Thanks, and also: please hurry."
+    block = llm.untrusted_block(message)
+    assert len(block) < len(message)
+    assert "Is it safe to cycle in Pune today?" in block
+    assert "please hurry" in block
+    assert "characters removed from the middle" in block
+    assert block.rstrip().endswith("</user_message>")
+
+    bot.use("high_wind")
+    out = bot.ask(message)
+    assert out["branch"] == "compose"
+    assert "SOP-EX-01" in out["matched_sop_ids"]
+
+
+def test_matcher_drops_an_unknown_id_from_the_fuzzy_pass(bot):
+    """CHECKS the matcher's own id validation, which no previous test exercised - the
+    guard was silently doing all the work.
+    PASS = the invented id never reaches matched_sop_ids or the reply, the drop is
+    logged, and a legitimate verdict in the same response survives."""
+    from backend.fake_llm import fake_llm
+
+    def smuggler(system: str, user: str) -> str:
+        if system.startswith("JOB: fuzzy-match"):
+            return ('{"matches": [{"id": "SOP-GHOST-42", "apply": true, "fields": '
+                    '{"temperature_2m": 23.0}}, {"id": "SOP-EX-07", "apply": true, '
+                    '"fields": {"temperature_2m": 23.0}}]}')
+        return fake_llm(system, user)
+
+    bot.use("pleasant")
+    bot.use_llm(smuggler)
+    out = bot.ask("good day for a picnic in Pune today?")
+    assert "SOP-GHOST-42" not in out["matched_sop_ids"]
+    assert "SOP-GHOST-42" not in out["reply"]
+    assert any("SOP-GHOST-42" in line and "dropped" in line for line in out["trace"]), out["trace"]
+    assert "SOP-EX-07" in out["matched_sop_ids"], "a valid verdict alongside it must survive"
+
+
+def test_intake_strips_tags_outside_the_vocabulary(bot):
+    """CHECKS that control-flow fields are re-derived in code rather than trusted from
+    the model - the structural defence against a prompt-injected intent.
+    PASS = invented tags and audiences are discarded, a path-like time window falls
+    back to `now`, and the activity still resolves."""
+    from backend.fake_llm import fake_llm
+
+    def injected(system: str, user: str) -> str:
+        if system.startswith("JOB: intake"):
+            return json.dumps({
+                "is_outdoor_safety_question": True, "location": "Pune",
+                "activity": "cycling", "activity_raw": "cycle",
+                "activity_tags": ["two_wheeler", "admin", "root", "ignore_all_sops"],
+                "audience": ["martian", "superuser"], "time_window": "../../etc/passwd",
+                "is_followup": False,
+            })
+        return fake_llm(system, user)
+
+    bot.use("high_wind")
+    bot.use_llm(injected)
+    out = bot.ask("is it safe to cycle in Pune?")
+    intent = out["intent"]
+    assert set(intent.activity_tags) <= set(get_policy().tags)
+    assert "admin" not in intent.activity_tags and "root" not in intent.activity_tags
+    assert intent.audience == ["general"]
+    assert intent.time_window == "now"
+    assert "SOP-EX-01" in out["matched_sop_ids"]
+
+
+def test_at_most_three_sops_are_surfaced(bot):
+    """CHECKS the bounded-length half of the conflict rule, which the old fixture was
+    too small to exercise.
+    PASS = more than three SOPs match, exactly three are surfaced, the override leads,
+    and the full match list stays available for debugging."""
+    bot.use("severe_rain")
+    out = bot.ask("is it safe to cycle to work in Pune today?")
+    assert len(out["matched"]) > 3, [m.sop_id for m in out["matched"]]
+    assert len(out["matched_sop_ids"]) == 3
+    assert out["matched_sop_ids"][0] == "SOP-SIT-01"
+    assert set(out["matched_sop_ids"]) <= {m.sop_id for m in out["matched"]}
+
+
+def test_every_turn_is_logged_with_its_decision(bot, caplog):
+    """CHECKS that "why did it say that" is answerable afterwards. The trace used to be
+    returned to the caller and recorded nowhere.
+    PASS = one INFO record per turn carrying branch, cited SOPs, place and the
+    snapshot timestamp."""
+    import logging as _logging
+
+    bot.use("high_wind")
+    with caplog.at_level(_logging.INFO, logger="advisory"):
+        out = bot.ask("is it safe to cycle to work in Pune right now?")
+    records = [r.getMessage() for r in caplog.records if r.name == "advisory"]
+    assert records, "no log record was emitted for the turn"
+    line = records[0]
+    assert f"branch={out['branch']}" in line
+    assert "SOP-EX-01" in line
+    assert "Pune" in line
+    assert out["weather"].current_time in line
+
+
+def test_pressure_trend_needs_past_hours_from_the_api(policy, monkeypatch):
+    """CHECKS that the forecast request actually asks for past hours. Without them
+    `pressure_change_3h` is None early in the local day and the situational override
+    silently loses one of its three signals.
+    PASS = `past_hours` is in the query with at least 3 hours, and the recorded
+    payload yields a real pressure trend."""
+    captured: dict[str, object] = {}
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "mild_pune.json").read_text())
+
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return fixture["forecast"]
+
+    def capture(self, url, params=None, **_kwargs):
+        captured.update(params or {})
+        return Response()
+
+    monkeypatch.setattr(httpx.Client, "get", capture)
+    place, _snapshot, _raw = load_fixture("mild_pune")
+    snapshot = weather.fetch_forecast(place.latitude, place.longitude, place, policy)
+    assert captured.get("past_hours"), f"past_hours missing from the query: {sorted(captured)}"
+    assert int(captured["past_hours"]) >= 3, "at least 3 past hours are needed for the 3h trend"
+    assert snapshot.derived["pressure_change_3h"] is not None

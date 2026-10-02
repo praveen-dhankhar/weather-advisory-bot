@@ -22,6 +22,33 @@ from backend.models import SOP, SOPConfigError
 SOP_DIR = Path(__file__).resolve().parent.parent / "sops"
 VALID_AGGREGATES = {"max", "min", "sum", "mean", "set"}
 VALID_BLOCKS = {"current", "hourly"}
+GROUP_OPERATORS = {"in_group": "in", "not_in_group": "not_in"}
+
+
+class StrictLoader(yaml.SafeLoader):
+    """SafeLoader that refuses duplicate mapping keys.
+
+    Plain YAML silently keeps the last of two identical keys. For a policy file that
+    means a second `sops:` block discards every SOP above it - the exact mistake
+    someone makes when appending a new SOP - with no error at all.
+    """
+
+
+def _no_duplicate_keys(loader: StrictLoader, node: yaml.MappingNode, deep: bool = False):
+    seen: set[Any] = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                None, None,
+                f"duplicate key {key!r} - YAML would silently keep only the last one",
+                key_node.start_mark,
+            )
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+
+StrictLoader.construct_mapping = _no_duplicate_keys  # type: ignore[method-assign]
 
 
 @dataclass(frozen=True)
@@ -55,6 +82,7 @@ class Policy:
     audiences: list[str]
     activities: dict[str, dict[str, Any]]
     time_windows: dict[str, TimeWindowSpec]
+    code_groups: dict[str, list[int]] = field(default_factory=dict)
     alias_to_activity: list[tuple[str, str]] = field(default_factory=list)
 
     @property
@@ -72,14 +100,16 @@ class Policy:
 
 def _read_yaml(path: Path) -> Any:
     try:
-        return yaml.safe_load(path.read_text())
+        return yaml.load(path.read_text(), Loader=StrictLoader)
     except FileNotFoundError as exc:
         raise SOPConfigError(f"{path.name}: required policy file is missing ({path})") from exc
     except yaml.YAMLError as exc:
         raise SOPConfigError(f"{path.name}: not valid YAML - {exc}") from exc
 
 
-def _load_fields(path: Path) -> tuple[dict[str, FieldSpec], dict[str, dict[str, Any]], list[str]]:
+def _load_fields(
+    path: Path,
+) -> tuple[dict[str, FieldSpec], dict[str, dict[str, Any]], list[str], dict[str, list[int]]]:
     raw = _read_yaml(path)
     if not isinstance(raw, dict) or not isinstance(raw.get("fields"), dict):
         raise SOPConfigError(f"{path.name}: expected a top-level `fields` mapping")
@@ -115,10 +145,34 @@ def _load_fields(path: Path) -> tuple[dict[str, FieldSpec], dict[str, dict[str, 
     if overlap:
         raise SOPConfigError(f"{path.name}: {overlap} declared as both a raw field and a derived signal")
 
+    groups_raw = raw.get("code_groups") or {}
+    if not isinstance(groups_raw, dict):
+        raise SOPConfigError(f"{path.name}: `code_groups` must be a mapping")
+    groups: dict[str, list[int]] = {}
+    for name, codes in groups_raw.items():
+        if not isinstance(codes, list) or not codes or not all(isinstance(c, int) for c in codes):
+            raise SOPConfigError(f"{path.name}: code group `{name}` must be a non-empty list of ints")
+        groups[str(name)] = [int(c) for c in codes]
+
+    # Resolve each derived signal's `codes_group` into the literal codes its builder
+    # reads, so the group is defined once and cannot drift.
+    for name, cfg in derived.items():
+        if not isinstance(cfg, dict):
+            raise SOPConfigError(f"{path.name}: derived signal `{name}` must be a mapping")
+        group = cfg.get("codes_group")
+        if group is None:
+            continue
+        if group not in groups:
+            raise SOPConfigError(
+                f"{path.name}: derived signal `{name}` names unknown code group {group!r}; "
+                f"known groups: {sorted(groups)}"
+            )
+        cfg["codes"] = groups[group]
+
     daily = raw.get("daily") or []
     if not isinstance(daily, list):
         raise SOPConfigError(f"{path.name}: `daily` must be a list")
-    return specs, derived, [str(d) for d in daily]
+    return specs, derived, [str(d) for d in daily], groups
 
 
 def _load_vocab(path: Path) -> tuple[dict[str, str], list[str], dict[str, Any], dict[str, TimeWindowSpec]]:
@@ -164,7 +218,35 @@ def _load_vocab(path: Path) -> tuple[dict[str, str], list[str], dict[str, Any], 
     return {str(k): str(v) for k, v in tags.items()}, [str(a) for a in audiences], activities, windows
 
 
-def _load_sops(sop_dir: Path, policy_fields: set[str], tags: set[str], audiences: set[str]) -> dict[str, SOP]:
+def _expand_groups(node: Any, groups: dict[str, list[int]], where: str) -> None:
+    """Rewrite `{field: {in_group: name}}` into `{field: {in: [codes]}}` in place."""
+    if not isinstance(node, dict):
+        return
+    for key, payload in node.items():
+        if key in ("all_of", "any_of"):
+            for child in payload if isinstance(payload, list) else [payload]:
+                _expand_groups(child, groups, where)
+        elif key == "not":
+            _expand_groups(payload, groups, where)
+        elif isinstance(payload, dict):
+            for op, plain in GROUP_OPERATORS.items():
+                if op in payload:
+                    name = payload.pop(op)
+                    if name not in groups:
+                        raise SOPConfigError(
+                            f"{where}: field `{key}` names unknown code group {name!r}; "
+                            f"known groups: {sorted(groups)}"
+                        )
+                    payload[plain] = list(groups[name])
+
+
+def _load_sops(
+    sop_dir: Path,
+    policy_fields: set[str],
+    tags: set[str],
+    audiences: set[str],
+    groups: dict[str, list[int]],
+) -> dict[str, SOP]:
     sops: dict[str, SOP] = {}
     files = sorted(p for p in sop_dir.glob("*.yaml") if not p.name.startswith("_"))
     if not files:
@@ -178,6 +260,8 @@ def _load_sops(sop_dir: Path, policy_fields: set[str], tags: set[str], audiences
             where = f"{path.name}[{index}]"
             if not isinstance(body, dict):
                 raise SOPConfigError(f"{where}: each SOP must be a mapping")
+            _expand_groups(body.get("conditions"), groups, f"{where} (id={body.get('id', '?')})")
+            _expand_groups(body.get("signals"), groups, f"{where} (id={body.get('id', '?')})")
             try:
                 sop = SOP(**body, source_file=path.name)
             except ValidationError as exc:
@@ -207,10 +291,10 @@ def _load_sops(sop_dir: Path, policy_fields: set[str], tags: set[str], audiences
 def load_policy(sop_dir: Path | str = SOP_DIR) -> Policy:
     """Load sops/ into a validated :class:`Policy`, or raise ``SOPConfigError``."""
     sop_dir = Path(sop_dir)
-    fields, derived, daily = _load_fields(sop_dir / "_fields.yaml")
+    fields, derived, daily, groups = _load_fields(sop_dir / "_fields.yaml")
     tags, audiences, activities, windows = _load_vocab(sop_dir / "_vocab.yaml")
     known = set(fields) | set(derived)
-    sops = _load_sops(sop_dir, known, set(tags), set(audiences))
+    sops = _load_sops(sop_dir, known, set(tags), set(audiences), groups)
 
     aliases: list[tuple[str, str]] = []
     for name, body in activities.items():
@@ -221,6 +305,7 @@ def load_policy(sop_dir: Path | str = SOP_DIR) -> Policy:
     return Policy(
         sops=sops, fields=fields, derived=derived, daily=daily, tags=tags, audiences=audiences,
         activities=activities, time_windows=windows, alias_to_activity=aliases,
+        code_groups=groups,
     )
 
 

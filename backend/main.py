@@ -24,9 +24,20 @@ app = FastAPI(
 )
 
 
+MAX_MESSAGE_CHARS = 8000
+
+
 class ChatRequest(BaseModel):
     session_id: str = Field(default="default", min_length=1, max_length=120)
-    message: str = Field(min_length=1, max_length=2000)
+    message: str = Field(
+        min_length=1,
+        max_length=MAX_MESSAGE_CHARS,
+        description=(
+            f"Up to {MAX_MESSAGE_CHARS} characters; longer is rejected with 422. "
+            "Long messages are truncated head-and-tail before reaching a prompt "
+            "(backend/llm.py::untrusted_block)."
+        ),
+    )
 
 
 class ChatResponse(BaseModel):

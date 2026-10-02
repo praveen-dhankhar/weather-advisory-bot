@@ -11,6 +11,7 @@ r"""The LangGraph: nodes, conditional edges, four genuinely different endings.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Optional
 
@@ -21,11 +22,16 @@ from backend.loader import get_policy
 from backend.memory import MEMORY, Memory
 from backend.models import (
     GraphState,
+    LocationAmbiguous,
     LocationUnresolved,
     WeatherSnapshot,
     WeatherUnavailable,
 )
 from backend.nodes import composer, fixed, intake, matcher
+
+# One logger for the whole graph. Answers "why did it say that" after the fact:
+# branch taken, SOPs cited, place and snapshot timestamp, guard verdict.
+log = logging.getLogger("advisory")
 
 
 def install_llm() -> None:
@@ -44,9 +50,18 @@ def location_node(state: GraphState) -> dict[str, Any]:
     name = state["intent"].location or ""
     try:
         place = weather.geocode(name)
+    except LocationAmbiguous as exc:
+        trace.append(f"location: AMBIGUOUS {name!r} -> {exc.candidates}; asking instead of guessing")
+        return {
+            "branch": "clarify",
+            "clarify_question": fixed.AMBIGUOUS_TEXT.format(
+                query=name, candidates="; ".join(exc.candidates)
+            ),
+            "trace": trace,
+        }
     except (LocationUnresolved, WeatherUnavailable) as exc:
         trace.append(f"location: FAILED for {name!r} ({type(exc).__name__}: {exc})")
-        return {"branch": "fail", "error": str(exc), "trace": trace}
+        return {"branch": "fail", "error": str(exc), "failed_before_fetch": False, "trace": trace}
     trace.append(f"location: {name!r} -> {place.label} ({place.latitude}, {place.longitude})")
     return {"location": place, "trace": trace}
 
@@ -83,7 +98,12 @@ def route_after_intake(state: GraphState) -> str:
 
 
 def route_after_location(state: GraphState) -> str:
-    return "failure" if state.get("branch") == "fail" else "weather"
+    branch = state.get("branch")
+    if branch == "fail":
+        return "failure"
+    if branch == "clarify":  # same-named places in different countries
+        return "clarify"
+    return "weather"
 
 
 def route_after_weather(state: GraphState) -> str:
@@ -91,9 +111,11 @@ def route_after_weather(state: GraphState) -> str:
 
 
 def route_after_match(state: GraphState) -> str:
+    """match only ever produces these three. Weather/location failures never reach it."""
     branch = state.get("branch") or "no_match"
-    return {"fail": "failure", "override": "override", "compose": "compose",
-            "no_match": "no_match"}.get(branch, "no_match")
+    return {"override": "override", "compose": "compose", "no_match": "no_match"}.get(
+        branch, "no_match"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -115,10 +137,11 @@ def build_graph():
     builder.add_edge(START, "intake")
     builder.add_conditional_edges("intake", route_after_intake,
                                  ["location", "no_match", "clarify", "failure"])
-    builder.add_conditional_edges("location", route_after_location, ["weather", "failure"])
+    builder.add_conditional_edges("location", route_after_location,
+                                 ["weather", "clarify", "failure"])
     builder.add_conditional_edges("weather", route_after_weather, ["match", "failure"])
     builder.add_conditional_edges("match", route_after_match,
-                                 ["compose", "override", "no_match", "failure"])
+                                 ["compose", "override", "no_match"])
     builder.add_edge("compose", "guard")
     builder.add_edge("override", "guard")
     for terminal in ("guard", "no_match", "failure", "clarify"):
@@ -150,6 +173,23 @@ def answer(
     session.add_turn("user", message)
     session.add_turn("assistant", final.get("reply", ""))
     memory.record(session_id, final)
+
+    snapshot = final.get("weather")
+    guard = final.get("guard_report") or {}
+    log.info(
+        "session=%s branch=%s sops=%s place=%s observed_at=%s window=%s guard_ok=%s%s",
+        session_id,
+        final.get("branch"),
+        ",".join(final.get("matched_sop_ids") or []) or "-",
+        snapshot.place.label if snapshot else "-",
+        snapshot.current_time if snapshot else "-",
+        final["window"].window if final.get("window") else "-",
+        guard.get("ok", "-"),
+        " FELL_BACK_TO_TEMPLATE" if guard.get("fell_back") else "",
+    )
+    for line in final.get("trace") or []:
+        if "FAILED" in line or "dropped" in line or "AMBIGUOUS" in line:
+            log.warning("session=%s %s", session_id, line)
     return final
 
 

@@ -28,7 +28,7 @@ sops:
         - visibility: {lt: 1000}
         - all_of:
             - visibility: {lt: 2000}
-            - weather_code: {in: [45, 48]}
+            - weather_code: {in_group: fog}
     advice: >-
       Visibility is poor enough to be dangerous on the road. Below 1 km - or
       below 2 km in fog - delay the journey if you can. If you must travel, use
@@ -46,7 +46,7 @@ sops:
     conditions:
       any_of:
         - precip_next_6h: {gte: 20}
-        - weather_code: {in: [65, 82, 67]}
+        - weather_code: {in_group: heavy_rain}
     advice: >-
       Heavy rain is forecast across this journey window. Twenty millimetres or
       more in six hours floods underpasses and low junctions and can strand
@@ -87,7 +87,7 @@ sops:
         - precipitation_probability: {lt: 25}
         - visibility: {gte: 5000}
         - wind_speed_10m: {lt: 25}
-        - weather_code: {not_in: [45, 48, 65, 67, 82, 95, 96, 99]}
+        - weather_code: {not_in_group: bad_driving}
     advice: >-
       Nothing in the forecast argues against this journey: a low chance of rain,
       clear visibility above 5 km, light wind and no fog or storm codes. Travel as

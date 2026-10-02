@@ -38,7 +38,12 @@ Return ONE JSON object, no prose, no code fences, with exactly these keys:
   activity_tags: a subset of TAGS below. [] if unsure.
   audience: a non-empty subset of AUDIENCES below. Use ["general"] for the user
       themselves, ["child"] for a baby/toddler/kid, ["elderly"] for an older
-      adult, ["pet"] for a dog or other animal.
+      adult, ["pet"] for a dog or other animal. A FOLLOW-UP MAY CHANGE THE
+      AUDIENCE: if this message names a different person or animal than the
+      established facts - "and for my elderly father?", "what about the kids?",
+      "same for the dog?" - return the audience named in THIS message and ignore
+      the established one. The established audience is only a fallback for when
+      this message names nobody.
   time_window: exactly one key from TIME_WINDOWS below. Use "now" if unstated.
   is_followup: true if the message only makes sense against the earlier turn
       (e.g. "what about this evening?", "and tomorrow?").
@@ -142,7 +147,12 @@ def run(state: GraphState) -> dict[str, Any]:
         intent = Intent(**{k: v for k, v in raw.items() if k in Intent.model_fields})
     except (llm.LLMError, ValidationError, TypeError) as exc:
         trace.append(f"intake: unparseable intent ({type(exc).__name__}: {exc})")
-        return {"branch": "fail", "error": f"I could not read that request: {exc}", "trace": trace}
+        return {
+            "branch": "fail",
+            "error": str(exc),
+            "failed_before_fetch": True,  # do not blame the forecast for this
+            "trace": trace,
+        }
 
     intent = normalise(intent, message, facts, policy)
     trace.append(

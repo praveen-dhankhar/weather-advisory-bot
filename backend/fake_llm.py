@@ -40,7 +40,8 @@ WINDOW_HINTS = [
 ]
 
 OUTDOOR_HINTS = ["safe", "should i", "can i", "is it ok", "is it okay", "good day", "advisable",
-                 "alright", "wise", "fine to", "what about", "and tomorrow", "instead"]
+                 "alright", "wise", "fine to", "what about", "and tomorrow", "instead",
+                 "and for", "same for", "how about"]
 
 LOCATION_RE = re.compile(
     r"\b(?:in|at|around|near|to|from|for)\s+([A-Z][a-zA-Z]+(?:[ -][A-Z][a-zA-Z]+)?)")
@@ -71,7 +72,8 @@ def _intake(user: str) -> str:
     is_followup = bool(re.match(r"^\s*(what about|and|how about|ok but what about)\b", lowered)) or (
         activity is None and location is None and window != "now"
     )
-    outdoor = bool(activity) or any(h in lowered for h in OUTDOOR_HINTS)
+    # a follow-up is a continuation of an outdoor question by definition
+    outdoor = bool(activity) or is_followup or any(h in lowered for h in OUTDOOR_HINTS)
 
     return json.dumps(
         {

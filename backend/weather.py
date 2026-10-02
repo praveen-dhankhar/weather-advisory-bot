@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import unicodedata
 from typing import Any, Optional
 
 import httpx
@@ -21,6 +22,7 @@ import httpx
 from backend import conditions
 from backend.loader import Policy, get_policy
 from backend.models import (
+    LocationAmbiguous,
     LocationUnresolved,
     ResolvedLocation,
     WeatherSnapshot,
@@ -33,6 +35,10 @@ FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 FORECAST_DAYS = 3
 PAST_HOURS = 6  # needed for the pressure-trend derived signal
+# A same-named place in another country is only accepted silently when it clearly
+# dominates: at least this many people, and this many times the runner-up.
+MIN_POPULATION = 50_000
+POPULATION_DOMINANCE = 10
 
 
 def _simulated_down() -> bool:
@@ -42,11 +48,37 @@ def _simulated_down() -> bool:
 # --------------------------------------------------------------------------- #
 # Geocoding
 # --------------------------------------------------------------------------- #
-def geocode(city: str, client: Optional[httpx.Client] = None) -> ResolvedLocation:
-    """Resolve a place name. Documented default: take Open-Meteo's first result.
+def _normalise_place(name: str) -> str:
+    """Casefold and strip accents so "Bhopal" matches "Bhopāl"."""
+    decomposed = unicodedata.normalize("NFKD", str(name))
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold().strip()
 
-    Raises :class:`LocationUnresolved` for an empty name, no results or an HTTP
-    error, so the caller never has to guess at a location.
+
+def _population(result: dict[str, Any]) -> int:
+    value = result.get("population")
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def _label(result: dict[str, Any]) -> str:
+    bits = [result.get("name", "?")] + [
+        str(b) for b in (result.get("admin1"), result.get("country")) if b
+    ]
+    return ", ".join(bits)
+
+
+def geocode(city: str, client: Optional[httpx.Client] = None) -> ResolvedLocation:
+    """Resolve a place name, or refuse to guess.
+
+    Open-Meteo ranks by relevance, not by what the user meant: "Goa" returns Genoa
+    (Italy) first, and a typo like "bhopl" returns a village in Bangladesh. So:
+
+      * no results -> :class:`LocationUnresolved`;
+      * no exact name match (accent- and case-insensitive) -> :class:`LocationAmbiguous`,
+        because the place the user typed is not in the index at all;
+      * one exact match, or several within a single country -> take the most populous;
+      * exact matches in several countries -> accept the most populous ONLY if it has
+        at least MIN_POPULATION people and POPULATION_DOMINANCE times the runner-up;
+        otherwise raise :class:`LocationAmbiguous` and let the graph ask.
     """
     name = (city or "").strip()
     if not name:
@@ -73,7 +105,20 @@ def geocode(city: str, client: Optional[httpx.Client] = None) -> ResolvedLocatio
     results = payload.get("results") or []
     if not results:
         raise LocationUnresolved(f"no place found matching {name!r}")
-    return location_from_geocode(results[0])
+
+    wanted = _normalise_place(name)
+    exact = [r for r in results if _normalise_place(r.get("name", "")) == wanted]
+    if not exact:
+        raise LocationAmbiguous(name, [_label(r) for r in results[:3]])
+
+    ranked = sorted(exact, key=_population, reverse=True)
+    if len(ranked) == 1 or len({r.get("country") for r in ranked}) == 1:
+        return location_from_geocode(ranked[0])
+
+    best, runner_up = _population(ranked[0]), _population(ranked[1])
+    if best >= MIN_POPULATION and best >= POPULATION_DOMINANCE * max(runner_up, 1):
+        return location_from_geocode(ranked[0])
+    raise LocationAmbiguous(name, [_label(r) for r in ranked[:3]])
 
 
 def location_from_geocode(result: dict[str, Any]) -> ResolvedLocation:
@@ -180,7 +225,7 @@ def snapshot_from_payload(
         times=[str(t) for t in times],
         now_index=now_index(times, current_time),
     )
-    derived = conditions.compute_derived(ctx, policy.derived.keys())
+    derived = conditions.compute_derived(ctx, policy.derived)
 
     units = {**(payload.get("current_units") or {}), **(payload.get("hourly_units") or {})}
     place = place.model_copy(update={"timezone": payload.get("timezone") or place.timezone})

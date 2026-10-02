@@ -9,8 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
-# WMO codes used by the derived signals. Open-Meteo documents these.
-HEAVY_RAIN_CODES = {65, 67, 82, 95, 96, 99}
+# WMO code groups are POLICY and live in sops/_fields.yaml::code_groups. A derived
+# signal names the group it counts; SOP conditions reference the same group through
+# the `in_group` operator, so "heavy rain" is defined exactly once, as data.
 
 
 # --------------------------------------------------------------------------- #
@@ -193,41 +194,49 @@ class DerivedContext:
         return None
 
 
-def _sum_ahead(fname: str, hours: int) -> Callable[[DerivedContext], Optional[float]]:
-    def build(ctx: DerivedContext) -> Optional[float]:
-        values = ctx.ahead(fname, hours)
+# A builder reads the hourly arrays plus its own config block from _fields.yaml.
+Builder = Callable[[DerivedContext, dict[str, Any]], Optional[float]]
+
+
+def _window(cfg: dict[str, Any], default: int) -> int:
+    return int(cfg.get("hours", default))
+
+
+def _sum_ahead(fname: str, hours: int) -> Builder:
+    def build(ctx: DerivedContext, cfg: dict[str, Any]) -> Optional[float]:
+        values = ctx.ahead(fname, _window(cfg, hours))
         return round(sum(values), 1) if values else None
 
     return build
 
 
-def _max_ahead(fname: str, hours: int) -> Callable[[DerivedContext], Optional[float]]:
-    def build(ctx: DerivedContext) -> Optional[float]:
-        values = ctx.ahead(fname, hours)
+def _max_ahead(fname: str, hours: int) -> Builder:
+    def build(ctx: DerivedContext, cfg: dict[str, Any]) -> Optional[float]:
+        values = ctx.ahead(fname, _window(cfg, hours))
         return max(values) if values else None
 
     return build
 
 
-def _min_ahead(fname: str, hours: int) -> Callable[[DerivedContext], Optional[float]]:
-    def build(ctx: DerivedContext) -> Optional[float]:
-        values = ctx.ahead(fname, hours)
+def _min_ahead(fname: str, hours: int) -> Builder:
+    def build(ctx: DerivedContext, cfg: dict[str, Any]) -> Optional[float]:
+        values = ctx.ahead(fname, _window(cfg, hours))
         return min(values) if values else None
 
     return build
 
 
-def _pressure_now(ctx: DerivedContext) -> Optional[float]:
+def _pressure_now(ctx: DerivedContext, cfg: dict[str, Any]) -> Optional[float]:
     return ctx.current.get("pressure_msl") or ctx.at("pressure_msl", 0)
 
 
-def _pressure_change_3h(ctx: DerivedContext) -> Optional[float]:
-    now = _pressure_now(ctx)
-    before = ctx.at("pressure_msl", -3)
+def _pressure_change(ctx: DerivedContext, cfg: dict[str, Any]) -> Optional[float]:
+    now = _pressure_now(ctx, cfg)
+    before = ctx.at("pressure_msl", -_window(cfg, 3))
     return round(now - before, 1) if now is not None and before is not None else None
 
 
-def _gust_ratio(ctx: DerivedContext) -> Optional[float]:
+def _gust_ratio(ctx: DerivedContext, cfg: dict[str, Any]) -> Optional[float]:
     gust = ctx.current.get("wind_gusts_10m")
     mean = ctx.current.get("wind_speed_10m")
     if gust is None or mean is None:
@@ -235,28 +244,38 @@ def _gust_ratio(ctx: DerivedContext) -> Optional[float]:
     return round(gust / max(float(mean), 1.0), 2)
 
 
-def _heavy_rain_hours_next_12h(ctx: DerivedContext) -> Optional[float]:
-    codes = ctx.ahead("weather_code", 12)
+def _code_hours_ahead(ctx: DerivedContext, cfg: dict[str, Any]) -> Optional[float]:
+    """Hours whose weather code falls in the code group named by this signal."""
+    codes = ctx.ahead("weather_code", _window(cfg, 12))
     if not codes:
         return None
-    return float(sum(1 for c in codes if int(c) in HEAVY_RAIN_CODES))
+    wanted = {int(c) for c in cfg.get("codes", ())}
+    return float(sum(1 for c in codes if int(c) in wanted))
 
 
-DERIVED_BUILDERS: dict[str, Callable[[DerivedContext], Optional[float]]] = {
+DERIVED_BUILDERS: dict[str, Builder] = {
     "precip_next_6h": _sum_ahead("precipitation", 6),
     "precip_next_24h": _sum_ahead("precipitation", 24),
     "max_precip_prob_next_12h": _max_ahead("precipitation_probability", 12),
     "pressure_now": _pressure_now,
-    "pressure_change_3h": _pressure_change_3h,
+    "pressure_change_3h": _pressure_change,
     "gust_ratio": _gust_ratio,
-    "heavy_rain_hours_next_12h": _heavy_rain_hours_next_12h,
+    "heavy_rain_hours_next_12h": _code_hours_ahead,
     "min_visibility_next_6h": _min_ahead("visibility", 6),
 }
 
 
-def compute_derived(ctx: DerivedContext, names: Iterable[str]) -> dict[str, Optional[float]]:
-    """Run the registered builder for each declared derived signal."""
-    return {name: DERIVED_BUILDERS[name](ctx) for name in names}
+def compute_derived(
+    ctx: DerivedContext, configs: "dict[str, dict[str, Any]] | Iterable[str]"
+) -> dict[str, Optional[float]]:
+    """Run the registered builder for each declared derived signal.
+
+    `configs` is the `derived:` mapping from _fields.yaml (name -> config block).
+    A bare iterable of names is accepted so unit tests can stay terse.
+    """
+    if not isinstance(configs, dict):
+        configs = {name: {} for name in configs}
+    return {name: DERIVED_BUILDERS[name](ctx, cfg or {}) for name, cfg in configs.items()}
 
 
 # --------------------------------------------------------------------------- #
@@ -319,7 +338,11 @@ def demo() -> None:
     assert compute_derived(ctx, ["precip_next_6h"])["precip_next_6h"] == 6.0
     assert compute_derived(ctx, ["precip_next_24h"])["precip_next_24h"] == 24.0
     assert compute_derived(ctx, ["gust_ratio"])["gust_ratio"] == 2.4
-    assert compute_derived(ctx, ["heavy_rain_hours_next_12h"])["heavy_rain_hours_next_12h"] == 2.0
+    heavy = {"heavy_rain_hours_next_12h": {"codes": [65, 67, 82, 95, 96, 99]}}
+    assert compute_derived(ctx, heavy)["heavy_rain_hours_next_12h"] == 2.0
+    # the code list is config, not code: an empty group counts nothing
+    assert compute_derived(ctx, {"heavy_rain_hours_next_12h": {"codes": []}})[
+        "heavy_rain_hours_next_12h"] == 0.0
     assert compute_derived(ctx, ["max_precip_prob_next_12h"])["max_precip_prob_next_12h"] == 80.0
     assert compute_derived(ctx, ["min_visibility_next_6h"])["min_visibility_next_6h"] == 800.0
     # no history available at index 0 -> honest None rather than a guess
