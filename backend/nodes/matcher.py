@@ -19,7 +19,15 @@ from typing import Any, Optional
 
 from backend import conditions, llm, weather
 from backend.loader import Policy, get_policy
-from backend.models import SOP, GraphState, Intent, MatchedSOP, WeatherSnapshot, WindowValues
+from backend.models import (
+    SOP,
+    GraphState,
+    Intent,
+    MatchedSOP,
+    Severity,
+    WeatherSnapshot,
+    WindowValues,
+)
 
 FUZZY_SYSTEM = """JOB: fuzzy-match
 You decide whether each candidate rubric is satisfied by the weather numbers you
@@ -257,6 +265,25 @@ def run(state: GraphState) -> dict[str, Any]:
     trace += notes_n + notes_s + notes_f
 
     all_matched = rank(numeric + fuzzy + situational, policy)
+
+    # Refuse to REASSURE a child, an older adult or an animal on generic policy alone.
+    # If the audience is not the general population and nothing written for them
+    # matched, a low/info answer would imply "fine for them" on evidence that was
+    # never about them - so say no SOP applies instead. A moderate-or-worse SOP is
+    # always surfaced, whoever it was written for: a thunderstorm warning must never
+    # be suppressed because no audience-specific rule happened to fire.
+    vulnerable = [a for a in intent.audience if a != "general"]
+    if vulnerable and all_matched:
+        targeted = any(_is_audience_specific(policy.sops[m.sop_id]) for m in all_matched)
+        worst = max(m.severity.rank for m in all_matched)
+        if not targeted and worst < Severity.moderate.rank:
+            trace.append(
+                f"match: dropped {[m.sop_id for m in all_matched]} - only general-population "
+                f"guidance matched for audience {vulnerable}, and reassuring them on that "
+                f"basis is not supported by policy"
+            )
+            all_matched = []
+
     situational_ids = [m.sop_id for m in all_matched if policy.sops[m.sop_id].overrides]
     window = weather.resolve_window(snapshot, intent.time_window, policy)
 

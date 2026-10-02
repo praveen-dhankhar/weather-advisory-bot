@@ -62,7 +62,8 @@ def _intake(user: str) -> str:
 
     audience = [name for name, hints in policy.audience_hints.items() if any(has(h) for h in hints)]
     window = next((name for name, hints in WINDOW_HINTS if any(has(h) for h in hints)), "now")
-    is_followup = bool(re.match(r"^\s*(what about|and|how about|ok but what about)\b", lowered)) or (
+    is_followup = bool(re.match(
+        r"^\s*(what about|and|how about|same for|same question|ok but what about)\b", lowered)) or (
         activity is None and location is None and window != "now"
     )
     # a follow-up is a continuation of an outdoor question by definition

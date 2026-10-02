@@ -636,9 +636,10 @@ def test_followup_switching_to_the_pet_uses_the_dog_walk_sops(bot, policy):
 
 def test_incoherent_audience_switch_gives_no_guidance_rather_than_adult_advice(bot):
     """CHECKS the honest edge of the audience fix: "same for the dog?" after a cycling
-    question has no policy behind it - no SOP covers cycling with a dog.
-    PASS = the bot says no SOP applies instead of handing over advice written for a
-    healthy adult, which is what it used to do."""
+    question has no policy behind it - no SOP covers cycling with a dog, and the
+    generic travel/comfort SOPs were never written about animals.
+    PASS = the bot says no SOP applies, cites nothing, and the drop is explained in
+    the trace, instead of reassuring the user on evidence that was not about the dog."""
     bot.use("pleasant")
     bot.ask("is it safe to cycle in Pune today?", session_id="mix")
     second = bot.ask("same for the dog?", session_id="mix")
@@ -647,6 +648,46 @@ def test_incoherent_audience_switch_gives_no_guidance_rather_than_adult_advice(b
     assert second["matched_sop_ids"] == []
     assert fixed.NO_SOP_SENTENCE in second["reply"]
     assert "healthy adult" not in second["reply"]
+    assert any("reassuring them on that basis" in line for line in second["trace"]), second["trace"]
+
+
+def test_reassurance_rule_drops_only_low_severity_generic_guidance(policy):
+    """CHECKS the no-reassurance rule at the matcher level, where it is deterministic:
+    for a pet audience on a cycling activity only generic travel/comfort SOPs can
+    match, and none of them was written about animals.
+    PASS = the low/info generic matches are dropped with a reason in the trace, while
+    the same situation with a moderate-or-worse match keeps it."""
+    _place, snapshot, _raw = load_fixture("pleasant")
+    tags = ["outdoor", "exercise", "high_exertion", "two_wheeler", "commute", "travel"]
+    state = {
+        "intent": Intent(activity="cycling", activity_tags=tags, audience=["pet"],
+                         time_window="now", location="Pune"),
+        "weather": snapshot, "user_message": "same for the dog?", "trace": [],
+    }
+    out = matcher.run(state)
+    assert out["branch"] == "no_match", out["trace"]
+    assert out["matched_sop_ids"] == []
+    assert any("reassuring them on that basis" in line for line in out["trace"]), out["trace"]
+
+    # the general population is unaffected by the rule
+    state["intent"] = state["intent"].model_copy(update={"audience": ["general"]})
+    state["trace"] = []
+    general = matcher.run(state)
+    assert general["matched_sop_ids"], general["trace"]
+
+
+def test_a_warning_still_reaches_a_vulnerable_audience_without_a_targeted_sop(bot, policy):
+    """CHECKS that the rule above never suppresses a warning: a thunderstorm SOP is
+    written for everyone, so it must still fire for a child even though it names no
+    audience.
+    PASS = the critical universal SOP is surfaced and leads, despite no SOP-VG-*
+    matching."""
+    bot.use("thunderstorm")
+    out = bot.ask("should I take my kid to the park in Pune today?", session_id="storm-kid")
+    assert out["intent"].audience == ["child"]
+    assert "SOP-EX-04" in out["matched_sop_ids"], out["trace"]
+    assert policy.sops[out["matched_sop_ids"][0]].severity.rank >= 2
+    assert "SOP-EX-04" in out["reply"]
 
 
 def test_healthy_adult_sops_are_never_served_to_a_vulnerable_audience(bot, policy):
