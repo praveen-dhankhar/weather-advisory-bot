@@ -1,0 +1,157 @@
+# Outdoor exercise and leisure SOPs. Thresholds and wording are policy: edit the
+# YAML, not the code. Every entry is schema-validated at startup by loader.py.
+sops:
+  - id: SOP-EX-01
+    category: outdoor_exercise
+    severity: high
+    title: High wind on two wheels
+    kind: numeric
+    applies_to:
+      activity_tags_any: [two_wheeler]
+    conditions:
+      any_of:
+        - wind_speed_10m: {gte: 40}
+        - wind_gusts_10m: {gte: 55}
+    advice: >-
+      Do not ride a cycle, scooter or motorbike in these winds. Sustained wind at
+      or above 40 km/h, or gusts at or above 55 km/h, can push a two-wheeler out
+      of its lane without warning, especially on bridges, flyovers and open
+      stretches. Use enclosed transport instead. If you are already out, stop
+      somewhere sheltered and wait for the wind to drop.
+    cite_as: SOP-EX-01 (High wind on two wheels)
+
+  - id: SOP-EX-02
+    category: outdoor_exercise
+    severity: moderate
+    title: High UV during peak sun hours
+    kind: numeric
+    applies_to:
+      activity_tags_any: [exercise, prolonged_sun, leisure]
+    time_window:
+      hours: [11, 16]
+    conditions:
+      uv_index: {gte: 8}
+    advice: >-
+      UV index 8 or above is very high. Move the activity before 11:00 or after
+      16:00. If you must be out in that window, cover up with long sleeves and a
+      wide-brimmed hat, use broad-spectrum SPF 30+ reapplied every two hours,
+      stay in shade during rests, and keep the session short.
+    cite_as: SOP-EX-02 (High UV during peak sun hours)
+
+  - id: SOP-EX-03
+    category: outdoor_exercise
+    severity: high
+    title: Heat stress during hard effort
+    kind: numeric
+    applies_to:
+      activity_tags_any: [high_exertion]
+    conditions:
+      any_of:
+        - apparent_temperature: {gte: 38}
+        - all_of:
+            - apparent_temperature: {gte: 34}
+            - relative_humidity_2m: {gte: 70}
+    advice: >-
+      Postpone hard outdoor effort. At a feels-like temperature of 38 C or more -
+      or 34 C or more with humidity at 70% or above - the body cannot shed heat
+      fast enough and the risk of heat exhaustion is real. Shift the session to
+      early morning or late evening, or take it indoors. If you go out anyway,
+      halve the intensity, drink before you feel thirsty, and stop at once if you
+      get a headache, feel dizzy, or stop sweating.
+    cite_as: SOP-EX-03 (Heat stress during hard effort)
+
+  - id: SOP-EX-04
+    category: outdoor_exercise
+    severity: critical
+    title: Thunderstorm risk for any outdoor activity
+    kind: numeric
+    applies_to:
+      activity_tags_any: [outdoor]
+    conditions:
+      weather_code: {in: [95, 96, 99]}
+    advice: >-
+      Stay indoors. The forecast carries thunderstorm codes for this period.
+      Lightning kills people who are caught in the open, under isolated trees, on
+      water, or on high ground, and it can strike several kilometres ahead of the
+      rain. Do not start the activity. If you are already out, get inside a
+      building or a hard-topped vehicle and wait 30 minutes after the last
+      thunder before going back out.
+    cite_as: SOP-EX-04 (Thunderstorm risk for any outdoor activity)
+
+  - id: SOP-EX-05
+    category: outdoor_exercise
+    severity: info
+    title: Good conditions for outdoor exercise
+    kind: numeric
+    applies_to:
+      activity_tags_any: [exercise]
+    conditions:
+      all_of:
+        - apparent_temperature: {between: [12, 28]}
+        - wind_speed_10m: {lt: 25}
+        - precipitation_probability: {lt: 25}
+        - uv_index: {lt: 6}
+    advice: >-
+      Conditions are in the comfortable band for outdoor exercise: moderate
+      feels-like temperature, light wind, low chance of rain and a UV index below
+      6. No special precaution beyond the usual - carry water and warm up.
+    cite_as: SOP-EX-05 (Good conditions for outdoor exercise)
+
+  - id: SOP-EX-06
+    category: outdoor_exercise
+    severity: low
+    title: Pleasantness of a walk or outing
+    kind: fuzzy
+    applies_to:
+      activity_tags_any: [leisure, exercise]
+    fuzzy_criteria: >-
+      Judge whether the period is pleasant for an unhurried walk or outing. It is
+      pleasant when it is dry or nearly dry (precipitation probability under about
+      30% and accumulated precipitation near zero), the feels-like temperature is
+      roughly 14-30 C, wind is light to moderate (under about 30 km/h), and the UV
+      index is below about 8. If several of those are missed, it is not pleasant.
+    advice: >-
+      This is a judgement on comfort, not on safety. Conditions read as broadly
+      pleasant for a walk or an outing: dry enough, a comfortable feels-like
+      temperature, light wind and a UV index that does not demand cover. Take
+      water, and check any higher-severity note below before you commit.
+    cite_as: SOP-EX-06 (Pleasantness of a walk or outing)
+
+  - id: SOP-EX-07
+    category: outdoor_exercise
+    severity: low
+    title: Picnic suitability
+    kind: fuzzy
+    applies_to:
+      activity_tags_any: [leisure]
+    fuzzy_criteria: >-
+      Judge whether the period suits a picnic: it must be dry (precipitation
+      probability under about 20% and accumulated precipitation at or near zero),
+      the air temperature roughly 18-30 C, wind light (under about 25 km/h, so
+      plates and cloths stay put), and the UV index below 8. A picnic is not
+      suitable if it is likely to rain, is windy, or is outside that temperature
+      band.
+    advice: >-
+      Conditions suit a picnic: dry, a comfortable temperature band, light enough
+      wind to keep a cloth and plates in place, and UV that does not force you
+      into shade. Pick a spot with some shade anyway and take drinking water.
+    cite_as: SOP-EX-07 (Picnic suitability)
+
+  - id: SOP-EX-08
+    category: outdoor_exercise
+    severity: low
+    title: Warm-weather exercise caution
+    kind: numeric
+    applies_to:
+      activity_tags_any: [exercise, high_exertion]
+    conditions:
+      all_of:
+        - apparent_temperature: {gte: 30}
+        - apparent_temperature: {lt: 38}
+    advice: >-
+      Warm, not dangerous, for a healthy adult. Between a feels-like 30 C and 38 C
+      you can exercise outdoors, but drop the pace by a notch, drink 500-700 ml of
+      water per hour of effort, wear light breathable clothing, and prefer a shaded
+      or tree-lined route. Shift the session earlier or later if you can. Stop if
+      you get a headache, feel light-headed or stop sweating.
+    cite_as: SOP-EX-08 (Warm-weather exercise caution)

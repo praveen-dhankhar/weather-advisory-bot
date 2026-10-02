@@ -1,0 +1,114 @@
+# SOPs for children, older adults and pets. These carry lower thresholds than the
+# general-population SOPs on purpose.
+sops:
+  - id: SOP-VG-01
+    category: vulnerable_groups
+    severity: high
+    title: Heat risk for a child outdoors
+    kind: numeric
+    applies_to:
+      audience_any: [child]
+    conditions:
+      apparent_temperature: {gte: 34}
+    advice: >-
+      Keep a child out of this heat. Children heat up faster than adults, sweat
+      less efficiently and often do not ask for water. At a feels-like
+      temperature of 34 C or above, move the outing to before 10:00 or after
+      17:00. If you do go out, stay in shade, offer water every 15-20 minutes,
+      dress them in loose light clothing, and go straight indoors if they turn
+      flushed, limp or stop sweating. Never leave a child in a parked vehicle.
+    cite_as: SOP-VG-01 (Heat risk for a child outdoors)
+
+  - id: SOP-VG-02
+    category: vulnerable_groups
+    severity: moderate
+    title: Cold exposure risk for a child
+    kind: numeric
+    applies_to:
+      audience_any: [child]
+    conditions:
+      apparent_temperature_min: {lte: 8}
+    advice: >-
+      Dress a child for cold before going out. At a feels-like temperature of 8 C
+      or below, small bodies lose heat quickly through the head, hands and feet.
+      Use layers rather than one thick coat, cover the head and hands, keep the
+      time outdoors short, and go in if their hands turn cold to the touch or they
+      start shivering.
+    cite_as: SOP-VG-02 (Cold exposure risk for a child)
+
+  - id: SOP-VG-03
+    category: vulnerable_groups
+    severity: high
+    title: Heat risk for an older adult
+    kind: numeric
+    applies_to:
+      audience_any: [elderly]
+    conditions:
+      apparent_temperature: {gte: 32}
+    advice: >-
+      Avoid taking an older adult out in this heat. Ageing blunts both the thirst
+      signal and the sweat response, and several common medications for blood
+      pressure and the heart make it worse, so heat illness can arrive without the
+      usual warning. At a feels-like temperature of 32 C or above, keep to a cool
+      indoor space, take fluids regularly rather than on thirst, and seek medical
+      help for confusion, fainting or hot dry skin.
+    cite_as: SOP-VG-03 (Heat risk for an older adult)
+
+  - id: SOP-VG-04
+    category: vulnerable_groups
+    severity: moderate
+    title: Cold exposure risk for an older adult
+    kind: numeric
+    applies_to:
+      audience_any: [elderly]
+    conditions:
+      apparent_temperature_min: {lte: 10}
+    advice: >-
+      Take cold seriously for an older adult. At a feels-like temperature of 10 C
+      or below, cold raises blood pressure and strains the heart, and body
+      temperature can drop without obvious shivering. Keep the trip short, use
+      layers plus a hat and gloves, avoid going out in the coldest part of the
+      early morning, and keep an eye out for confusion or slurred speech.
+    cite_as: SOP-VG-04 (Cold exposure risk for an older adult)
+
+  - id: SOP-VG-05
+    category: vulnerable_groups
+    severity: high
+    title: Hot pavement risk for a dog
+    kind: numeric
+    applies_to:
+      audience_any: [pet]
+      activity_tags_any: [pet_walk]
+    conditions:
+      any_of:
+        - temperature_2m: {gte: 32}
+        - all_of:
+            - temperature_2m: {gte: 28}
+            - uv_index: {gte: 7}
+    advice: >-
+      Do not walk a dog on paved ground now. Asphalt in direct sun runs far hotter
+      than the air and can burn paw pads within a minute at these air
+      temperatures. Press the back of your hand to the surface for seven seconds -
+      if you cannot hold it there, it is too hot for paws. Walk at dawn or after
+      dark instead, keep to grass and shade, and carry water. Dogs cannot sweat;
+      heavy panting, drooling and stumbling mean stop immediately.
+    cite_as: SOP-VG-05 (Hot pavement risk for a dog)
+
+  - id: SOP-VG-06
+    category: vulnerable_groups
+    severity: moderate
+    title: Sun protection for a child
+    kind: numeric
+    applies_to:
+      audience_any: [child]
+    time_window:
+      hours: [10, 17]
+    conditions:
+      uv_index: {gte: 6}
+    advice: >-
+      Protect a child's skin for this outing. A UV index of 6 or above burns young
+      skin in well under an hour, and childhood sunburn carries lifetime risk.
+      Use shade as the main defence, add a wide-brimmed hat and a long-sleeved top,
+      apply broad-spectrum SPF 30+ twenty minutes before going out and again every
+      two hours, and keep infants under six months out of direct sun entirely.
+    cite_as: SOP-VG-06 (Sun protection for a child)

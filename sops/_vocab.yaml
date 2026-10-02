@@ -1,0 +1,79 @@
+# Controlled vocabulary. Data only - no code changes needed to add an activity,
+# a tag or a relative time window.
+version: 1
+
+# Who the advice is about. SOP `applies_to.audience_any` draws from this list.
+audiences: [general, child, elderly, pet]
+
+# Tag vocabulary. The description is shown to the intake LLM so it can tag a
+# free-text activity. SOP `applies_to.activity_tags_any` draws from these keys.
+tags:
+  outdoor: any activity that takes place outside
+  exercise: physical exertion (running, cycling, gym-outdoors, sport)
+  high_exertion: sustained hard effort that raises core temperature
+  two_wheeler: cycle, scooter or motorbike - exposed to wind and rain
+  commute: travelling to work, school or an appointment
+  travel: any journey by road, including driving and public transport
+  leisure: unhurried outdoor leisure (picnic, park visit, sightseeing)
+  prolonged_sun: 30+ minutes of direct sun exposure
+  water: in or on water
+  pet_walk: walking an animal on paved or open ground
+  with_children: an infant, toddler or school-age child is present
+  with_elderly: an older adult is present
+
+# Known activities. An activity the bot has no vocabulary entry for is treated
+# as out of scope (see backend/nodes/intake.py::resolve_activity) rather than
+# guessed at. Aliases are matched case-insensitively as whole words/phrases.
+activities:
+  cycling:
+    aliases: [cycling, cycle, cycle to work, bike, biking, bicycle, ride my bike, bike ride]
+    tags: [outdoor, exercise, high_exertion, two_wheeler, commute]
+  scooter:
+    aliases: [scooter, scooty, motorbike, motorcycle, two wheeler, two-wheeler, bike to office, ride my scooter]
+    tags: [outdoor, two_wheeler, commute, travel]
+  running:
+    aliases: [running, run, jog, jogging, go for a run, marathon training]
+    tags: [outdoor, exercise, high_exertion, prolonged_sun]
+  walking:
+    aliases: [walk, walking, go for a walk, stroll, fresh air, step outside, outing, wander]
+    tags: [outdoor, exercise, leisure]
+  hiking:
+    aliases: [hike, hiking, trek, trekking, trail]
+    tags: [outdoor, exercise, high_exertion, prolonged_sun]
+  sport:
+    aliases: [cricket, football, soccer, tennis, badminton outdoors, sports practice, match]
+    tags: [outdoor, exercise, high_exertion, prolonged_sun]
+  picnic:
+    aliases: [picnic, picnic lunch, barbecue, bbq, eat outside, lunch in the park]
+    tags: [outdoor, leisure, prolonged_sun]
+  park_visit:
+    aliases: [park, playground, take my kid out, take my child out, take my toddler out, play outside]
+    tags: [outdoor, leisure, with_children]
+  dog_walk:
+    aliases: [walk the dog, dog walk, walking my dog, take the dog out, walk my puppy]
+    tags: [outdoor, pet_walk, leisure]
+  driving:
+    aliases: [drive, driving, car journey, road trip, take the car, taxi, bus]
+    tags: [travel, commute]
+  school_run:
+    aliases: [school run, walk to school, drop my kid to school, drop my child at school]
+    tags: [outdoor, travel, commute, with_children]
+  gardening:
+    aliases: [gardening, garden work, mow the lawn, yard work]
+    tags: [outdoor, prolonged_sun]
+
+# Relative time windows the intake LLM may choose from. Hours are local to the
+# resolved location and inclusive. `use_current: true` reads the Open-Meteo
+# `current` block instead of an hourly slice.
+time_windows:
+  now:                {day_offset: 0, use_current: true, label: "right now"}
+  today:              {day_offset: 0, start_hour: 6,  end_hour: 21, label: "today"}
+  this_morning:       {day_offset: 0, start_hour: 6,  end_hour: 11, label: "this morning"}
+  midday:             {day_offset: 0, start_hour: 11, end_hour: 16, label: "around midday"}
+  this_afternoon:     {day_offset: 0, start_hour: 12, end_hour: 17, label: "this afternoon"}
+  this_evening:       {day_offset: 0, start_hour: 17, end_hour: 21, label: "this evening"}
+  tonight:            {day_offset: 0, start_hour: 21, end_hour: 23, label: "tonight"}
+  tomorrow:           {day_offset: 1, start_hour: 6,  end_hour: 21, label: "tomorrow"}
+  tomorrow_morning:   {day_offset: 1, start_hour: 6,  end_hour: 11, label: "tomorrow morning"}
+  tomorrow_afternoon: {day_offset: 1, start_hour: 12, end_hour: 17, label: "tomorrow afternoon"}
+  tomorrow_evening:   {day_offset: 1, start_hour: 17, end_hour: 21, label: "tomorrow evening"}

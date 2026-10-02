@@ -1,0 +1,96 @@
+# Travel and commute SOPs.
+sops:
+  - id: SOP-TR-01
+    category: travel
+    severity: moderate
+    title: High chance of rain on a journey
+    kind: numeric
+    applies_to:
+      activity_tags_any: [travel, commute]
+    conditions:
+      precipitation_probability: {gte: 70}
+    advice: >-
+      Rain is likely for this journey (precipitation probability 70% or above).
+      Allow extra travel time, expect slower traffic and standing water at the
+      usual low points, and carry rain cover. On two wheels, braking distances
+      roughly double on wet road - drop your speed and leave a bigger gap.
+    cite_as: SOP-TR-01 (High chance of rain on a journey)
+
+  - id: SOP-TR-02
+    category: travel
+    severity: high
+    title: Poor visibility on the road
+    kind: numeric
+    applies_to:
+      activity_tags_any: [travel, commute]
+    conditions:
+      any_of:
+        - visibility: {lt: 1000}
+        - all_of:
+            - visibility: {lt: 2000}
+            - weather_code: {in: [45, 48]}
+    advice: >-
+      Visibility is poor enough to be dangerous on the road. Below 1 km - or
+      below 2 km in fog - delay the journey if you can. If you must travel, use
+      low beam and fog lights rather than high beam, follow the lane markings
+      rather than the vehicle ahead, cut your speed hard, and do not overtake.
+    cite_as: SOP-TR-02 (Poor visibility on the road)
+
+  - id: SOP-TR-03
+    category: travel
+    severity: high
+    title: Heavy rain accumulation during travel
+    kind: numeric
+    applies_to:
+      activity_tags_any: [travel, commute]
+    conditions:
+      any_of:
+        - precip_next_6h: {gte: 20}
+        - weather_code: {in: [65, 82, 67]}
+    advice: >-
+      Heavy rain is forecast across this journey window. Twenty millimetres or
+      more in six hours floods underpasses and low junctions and can strand
+      traffic. Postpone non-essential travel. If you must go, pick a route that
+      avoids underpasses and known waterlogging spots, never drive or ride into
+      standing water of unknown depth, and tell someone your route and expected
+      arrival.
+    cite_as: SOP-TR-03 (Heavy rain accumulation during travel)
+
+  - id: SOP-TR-04
+    category: travel
+    severity: moderate
+    title: Gusty crosswinds on a commute
+    kind: numeric
+    applies_to:
+      activity_tags_any: [commute, two_wheeler, travel]
+    conditions:
+      all_of:
+        - gust_ratio: {gte: 1.8}
+        - wind_gusts_10m: {gte: 40}
+    advice: >-
+      Wind is gusting well above its steady speed, which is the pattern that
+      produces sudden sideways shoves on bridges, flyovers and open gaps between
+      buildings. Hold the handlebar or steering wheel with both hands, keep clear
+      of high-sided vehicles, and reduce speed before exposed stretches rather
+      than in them.
+    cite_as: SOP-TR-04 (Gusty crosswinds on a commute)
+
+  - id: SOP-TR-05
+    category: travel
+    severity: info
+    title: Clear conditions for a journey
+    kind: numeric
+    applies_to:
+      activity_tags_any: [travel, commute]
+    conditions:
+      all_of:
+        - precipitation_probability: {lt: 25}
+        - visibility: {gte: 5000}
+        - wind_speed_10m: {lt: 25}
+        - weather_code: {not_in: [45, 48, 65, 67, 82, 95, 96, 99]}
+    advice: >-
+      Nothing in the forecast argues against this journey: a low chance of rain,
+      clear visibility above 5 km, light wind and no fog or storm codes. Travel as
+      you normally would. On two wheels, carry a light rain layer anyway - a low
+      probability is not zero.
+    cite_as: SOP-TR-05 (Clear conditions for a journey)

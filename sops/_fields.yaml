@@ -1,0 +1,116 @@
+# The weather fields the bot may reason about. backend/weather.py builds the
+# Open-Meteo `current=`, `hourly=` and `daily=` query lists from this file, so a
+# new SOP that needs a new raw variable means adding a block here - not code.
+version: 1
+
+# key          = the name SOP conditions use
+# variable     = Open-Meteo variable name
+# blocks       = which Open-Meteo blocks to request it in (current and/or hourly)
+# aggregate    = how hourly values collapse when a window spans several hours
+#                (max | min | sum | mean | set)
+fields:
+  temperature_2m:
+    variable: temperature_2m
+    blocks: [current, hourly]
+    unit: "C"
+    aggregate: max
+  apparent_temperature:
+    variable: apparent_temperature
+    blocks: [current, hourly]
+    unit: "C"
+    aggregate: max
+  apparent_temperature_min:
+    variable: apparent_temperature
+    blocks: [current, hourly]
+    unit: "C"
+    aggregate: min
+  relative_humidity_2m:
+    variable: relative_humidity_2m
+    blocks: [current, hourly]
+    unit: "%"
+    aggregate: max
+  precipitation:
+    variable: precipitation
+    blocks: [current, hourly]
+    unit: "mm"
+    aggregate: sum
+  rain:
+    variable: rain
+    blocks: [current, hourly]
+    unit: "mm"
+    aggregate: sum
+  precipitation_probability:
+    variable: precipitation_probability
+    blocks: [hourly]
+    unit: "%"
+    aggregate: max
+  weather_code:
+    variable: weather_code
+    blocks: [current, hourly]
+    unit: "wmo"
+    aggregate: set
+  wind_speed_10m:
+    variable: wind_speed_10m
+    blocks: [current, hourly]
+    unit: "km/h"
+    aggregate: max
+  wind_gusts_10m:
+    variable: wind_gusts_10m
+    blocks: [current, hourly]
+    unit: "km/h"
+    aggregate: max
+  pressure_msl:
+    variable: pressure_msl
+    blocks: [current, hourly]
+    unit: "hPa"
+    aggregate: min
+  uv_index:
+    # Open-Meteo does not expose uv_index in the `current` block, so the current
+    # hour's hourly value is used for the "now" window. See weather.py.
+    variable: uv_index
+    blocks: [hourly]
+    unit: ""
+    aggregate: max
+  cloud_cover:
+    variable: cloud_cover
+    blocks: [current, hourly]
+    unit: "%"
+    aggregate: mean
+  visibility:
+    variable: visibility
+    blocks: [current, hourly]
+    unit: "m"
+    aggregate: min
+
+# Daily values fetched for context only (shown in the UI, not used by SOPs).
+daily: [uv_index_max, temperature_2m_max, temperature_2m_min, precipitation_sum, weather_code]
+
+# Derived signals. Each key must have a builder registered in
+# backend/conditions.py::DERIVED_BUILDERS - the loader fails loudly otherwise.
+# Adding a brand-new KIND of signal needs a builder function (code); re-using an
+# existing one in a new SOP does not.
+derived:
+  precip_next_6h:
+    unit: "mm"
+    description: accumulated precipitation over the next 6 hours
+  precip_next_24h:
+    unit: "mm"
+    description: accumulated precipitation over the next 24 hours
+  max_precip_prob_next_12h:
+    unit: "%"
+    description: highest hourly precipitation probability in the next 12 hours
+  pressure_now:
+    unit: "hPa"
+    description: current mean-sea-level pressure
+  pressure_change_3h:
+    unit: "hPa"
+    description: pressure now minus pressure 3 hours ago (negative = falling)
+  gust_ratio:
+    unit: ""
+    description: current wind gust divided by current mean wind speed
+  heavy_rain_hours_next_12h:
+    unit: "hours"
+    description: hours in the next 12 with a heavy-rain or thunderstorm WMO code
+  min_visibility_next_6h:
+    unit: "m"
+    description: lowest visibility in the next 6 hours

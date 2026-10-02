@@ -1,0 +1,57 @@
+# Situational override SOPs. These are evaluated against DERIVED signals rather
+# than single raw readings, so they can fire when no individual number looks
+# extreme. `overrides: true` means the SOP is named first in the reply and lifts
+# every outdoor-activity answer to its own severity.
+#
+# Open-Meteo is a forecast model, not an alerting authority: these SOPs describe
+# what the forecast data shows. They never claim an official warning exists.
+sops:
+  - id: SOP-SIT-01
+    category: situational
+    severity: high
+    title: Active heavy-rain system in the forecast data
+    kind: situational
+    overrides: true
+    applies_to:
+      activity_tags_any: [outdoor, travel, commute, leisure, exercise, pet_walk, two_wheeler]
+    signals:
+      all_of:
+        - precip_next_24h: {gte: 50}
+        - any_of:
+            - pressure_now: {lte: 1002}
+            - pressure_change_3h: {lte: -2.5}
+            - heavy_rain_hours_next_12h: {gte: 2}
+    advice: >-
+      The forecast data shows the signature of an active heavy-rain system over
+      this location: a large accumulation over the next 24 hours together with low
+      or falling pressure and heavy-rain hours in the model. Treat every outdoor
+      plan as high risk until it passes. Keep non-essential trips off the road,
+      avoid underpasses, low-lying roads and anything near a drain or nullah,
+      charge your phone, and expect waterlogging and traffic failure rather than
+      steady rain. This is a reading of forecast data, not an official warning
+      from any authority - check your local civic and meteorological bulletins for
+      that.
+    cite_as: SOP-SIT-01 (Active heavy-rain system in the forecast data)
+
+  - id: SOP-SIT-02
+    category: situational
+    severity: high
+    title: Rapidly falling pressure with squally wind
+    kind: situational
+    overrides: true
+    applies_to:
+      activity_tags_any: [outdoor, travel, commute, leisure, exercise, pet_walk, two_wheeler]
+    signals:
+      all_of:
+        - pressure_change_3h: {lte: -3}
+        - gust_ratio: {gte: 2.0}
+        - wind_gusts_10m: {gte: 35}
+    advice: >-
+      The forecast data shows pressure dropping fast with gusts running at twice
+      the steady wind speed - the pattern that precedes a squall line. Squalls
+      arrive in minutes and bring sudden violent wind, falling branches and
+      blinding rain. Do not start an outdoor activity on this window. If you are
+      out, get under solid shelter rather than a tree, a hoarding or a tin roof.
+      This is a reading of forecast data, not an official warning from any
+      authority.
+    cite_as: SOP-SIT-02 (Rapidly falling pressure with squally wind)
