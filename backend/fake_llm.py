@@ -16,8 +16,7 @@ import re
 from typing import Any
 
 from backend.loader import get_policy
-from backend.nodes import composer
-from backend.nodes.intake import resolve_activity
+from backend.nodes.intake import UNSUPPORTED, resolve_activity
 
 WINDOW_HINTS = [
     ("tomorrow_morning", ["tomorrow morning"]),
@@ -30,14 +29,17 @@ WINDOW_HINTS = [
     ("midday", ["midday", "noon", "lunchtime", "middle of the day"]),
     ("this_afternoon", ["this afternoon", "afternoon"]),
     ("today", ["today", "rest of the day"]),
+    (UNSUPPORTED, ["next week", "next weekend", "this weekend", "weekend", "in three days",
+                   "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]),
 ]
 
 OUTDOOR_HINTS = ["safe", "should i", "can i", "is it ok", "is it okay", "good day", "advisable",
                  "alright", "wise", "fine to", "what about", "and tomorrow", "instead",
                  "and for", "same for", "how about"]
 
-LOCATION_RE = re.compile(
-    r"\b(?:in|at|around|near|to|from|for)\s+([A-Z][a-zA-Z]+(?:[ -][A-Z][a-zA-Z]+)?)")
+PLACE = r"[A-Z][a-zA-Z]+(?:[ -][A-Z][a-zA-Z]+)?(?:,\s*[A-Z][a-zA-Z]+(?: [A-Z][a-zA-Z]+)?)?"
+LOCATION_RE = re.compile(rf"\b(?:in|at|around|near|to|from|for)\s+({PLACE})")
+BARE_PLACE_RE = re.compile(rf"^\s*({PLACE})\s*[.!?]?\s*$")  # a reply that is only a place name
 STOPWORDS = {"the", "work", "office", "school", "park", "home", "my", "me", "i"}
 
 
@@ -51,7 +53,7 @@ def _intake(user: str) -> str:
 
     activity = resolve_activity(policy, message)
     location = None
-    for candidate in LOCATION_RE.findall(message):
+    for candidate in LOCATION_RE.findall(message) + BARE_PLACE_RE.findall(message):
         if candidate.lower() not in STOPWORDS:
             location = candidate
             break
@@ -61,10 +63,10 @@ def _intake(user: str) -> str:
         return re.search(rf"(?<![a-z]){re.escape(phrase)}(?![a-z])", lowered) is not None
 
     audience = [name for name, hints in policy.audience_hints.items() if any(has(h) for h in hints)]
-    window = next((name for name, hints in WINDOW_HINTS if any(has(h) for h in hints)), "now")
+    window = next((name for name, hints in WINDOW_HINTS if any(has(h) for h in hints)), None)
     is_followup = bool(re.match(
         r"^\s*(what about|and|how about|same for|same question|ok but what about)\b", lowered)) or (
-        activity is None and location is None and window != "now"
+        activity is None and location is None and window is not None
     )
     # a follow-up is a continuation of an outdoor question by definition
     outdoor = bool(activity) or is_followup or any(h in lowered for h in OUTDOOR_HINTS)
@@ -125,26 +127,25 @@ def _fuzzy(user: str) -> str:
     return json.dumps({"matches": matches})
 
 
-def _compose(user: str) -> str:
-    """Phrase the approved guidance with no paraphrasing at all."""
-    place = re.search(r"PLACE: (.*)", user)
-    period = re.search(r"PERIOD: (.*?) \(local", user)
-    advice = re.findall(r"  advice: (.*?)(?=\n(?:PRIMARY|SECONDARY|\n)|\nWEATHER NUMBERS)", user, re.DOTALL)
-    ids = re.findall(r"(?:PRIMARY|SECONDARY) SOP (SOP-[A-Z0-9]+-\d+)", user)
-    numbers_block = re.search(r"WEATHER NUMBERS \(the only source of figures\):\n(\{.*?\n\})", user, re.DOTALL)
-    numbers: dict[str, Any] = json.loads(numbers_block.group(1)) if numbers_block else {}
-    override = "OVERRIDE MODE" in user
+def _compose(system: str, user: str) -> str:
+    """Phrase the approved guidance with no paraphrasing at all, naming the primary
+    SOP's first reading through its placeholder the way the prompt asks."""
+    place = re.search(r"^PLACE: (.*)$", user, re.MULTILINE)
+    period = re.search(r"^PERIOD: (.*?) \(", user, re.MULTILINE)
+    advice = re.findall(r"^  advice: (.*)$", user, re.MULTILINE)
+    ids = re.findall(r"^(?:PRIMARY|SECONDARY) SOP (SOP-[A-Z0-9]+-\d+)", user, re.MULTILINE)
+    readings = re.findall(r"^  (\{[a-z0-9_]+\}): (.*?)(?: \(.*\))?$", user, re.MULTILINE)
+    override = "OVERRIDE MODE" in system
 
     parts = []
     if override:
         parts.append("The forecast data shows a weather system that governs this answer.")
     head = f"For {place.group(1).strip() if place else 'this location'}, {period.group(1).strip() if period else 'now'}:"
     for index, (sop_id, text) in enumerate(zip(ids, advice)):
-        body = " ".join(text.split())
-        parts.append(f"{head} {body} [{sop_id}]" if index == 0 else f"Also note: {body} [{sop_id}]")
-    readings = composer.readings_line(numbers)
+        parts.append(f"{head} {text} [{sop_id}]" if index == 0 else f"Also note: {text} [{sop_id}]")
     if readings:
-        parts.append(readings)
+        placeholder, name = readings[0]
+        parts.append(f"Measured {name} for this period: {placeholder}.")
     return "\n\n".join(parts)
 
 
@@ -156,5 +157,5 @@ def fake_llm(system: str, user: str) -> str:
     if job == "fuzzy-match":
         return _fuzzy(user)
     if job == "compose":
-        return _compose(user)
+        return _compose(system, user)
     raise AssertionError(f"fake_llm has no behaviour for JOB: {job!r}")

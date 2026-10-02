@@ -2,15 +2,21 @@
 
 Holds the last N turns plus the structured facts the intake node needs so that
 "what about this evening?" keeps the location and the activity. Resets on restart;
-there is deliberately no persistence.
+there is deliberately no persistence. Weather is never kept here: every turn
+fetches a fresh snapshot, so a follow-up cannot be answered from stale numbers.
 """
 
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 MAX_TURNS = 8
+# ponytail: in-process LRU, single worker only; a shared store (e.g. Redis) if this
+# ever runs with several workers or must survive a restart.
+MAX_SESSIONS = 500
 
 
 @dataclass
@@ -18,6 +24,7 @@ class Session:
     session_id: str
     history: list[dict[str, str]] = field(default_factory=list)
     facts: dict[str, Any] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def add_turn(self, role: str, content: str) -> None:
         self.history.append({"role": role, "content": content})
@@ -25,18 +32,28 @@ class Session:
 
 
 class Memory:
-    """In-memory session store keyed by session_id."""
+    """In-memory session store keyed by session_id, least-recently-used evicted first."""
 
-    def __init__(self) -> None:
-        self._sessions: dict[str, Session] = {}
+    def __init__(self, max_sessions: int = MAX_SESSIONS) -> None:
+        self._sessions: OrderedDict[str, Session] = OrderedDict()
+        self._lock = threading.Lock()
+        self.max_sessions = max_sessions
 
     def get(self, session_id: str) -> Session:
-        return self._sessions.setdefault(session_id, Session(session_id=session_id))
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                session = self._sessions[session_id] = Session(session_id=session_id)
+                while len(self._sessions) > self.max_sessions:
+                    self._sessions.popitem(last=False)
+            else:
+                self._sessions.move_to_end(session_id)
+            return session
 
-    def record(self, session_id: str, state: dict[str, Any]) -> None:
+    @staticmethod
+    def record(session: Session, state: dict[str, Any]) -> None:
         """Save what the next turn needs: location, activity, audience, window,
         the SOPs that fired and the branch taken."""
-        session = self.get(session_id)
         intent = state.get("intent")
         if intent is not None:
             session.facts.update(
@@ -54,15 +71,15 @@ class Memory:
                 "last_sop_ids": list(state.get("matched_sop_ids") or []),
                 "last_branch": state.get("branch"),
                 "last_window_label": window.label if window else session.facts.get("last_window_label"),
-                "last_numbers": dict(window.values) if window else None,
             }
         )
 
     def reset(self, session_id: Optional[str] = None) -> None:
-        if session_id is None:
-            self._sessions.clear()
-        else:
-            self._sessions.pop(session_id, None)
+        with self._lock:
+            if session_id is None:
+                self._sessions.clear()
+            else:
+                self._sessions.pop(session_id, None)
 
 
 MEMORY = Memory()

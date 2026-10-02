@@ -1,6 +1,6 @@
 # The weather fields the bot may reason about. backend/weather.py builds the
-# Open-Meteo `current=`, `hourly=` and `daily=` query lists from this file, so a
-# new SOP that needs a new raw variable means adding a block here - not code.
+# Open-Meteo `current=` and `hourly=` query lists from this file, so a new SOP
+# that needs a new raw variable means adding a block here - not code.
 version: 1
 
 # key          = the name SOP conditions use
@@ -94,9 +94,6 @@ code_groups:
   heavy_rain_or_storm: [65, 67, 82, 95, 96, 99]
   # codes that rule out "nothing argues against this journey"
   bad_driving: [45, 48, 65, 67, 82, 95, 96, 99]
-
-# Daily values fetched for context only (shown in the UI, not used by SOPs).
-daily: [uv_index_max, temperature_2m_max, temperature_2m_min, precipitation_sum, weather_code]
 
 # Derived signals. Each key must have a builder registered in
 # backend/conditions.py::DERIVED_BUILDERS - the loader fails loudly otherwise.

@@ -35,7 +35,7 @@ def record(city: str, stem: str) -> dict:
         params={
             "latitude": place["latitude"], "longitude": place["longitude"],
             "current": ",".join(current_vars), "hourly": ",".join(hourly_vars),
-            "daily": ",".join(policy.daily), "timezone": "auto",
+            "timezone": "auto",
             "forecast_days": FORECAST_DAYS, "past_hours": PAST_HOURS,
         },
         timeout=20,

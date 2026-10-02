@@ -1,9 +1,12 @@
-"""Post-compose output validation.
+"""Post-compose output validation, run on the model's DRAFT before code renders it.
 
-Three checks, all mechanical:
-  a) every SOP id cited in the reply is one of the matched ids;
-  b) every number in the reply traces to the snapshot or to the SOP text;
-  c) the reply either cites an SOP or states plainly that none applies.
+All checks are mechanical:
+  a) every SOP id cited is one of the surfaced ids, every surfaced id is cited, and
+     the primary is cited first - the conflict rule survives the model;
+  b) every {placeholder} names a reading the composer was offered;
+  c) every other number in the draft is written in the surfaced SOPs' text, the
+     place name or the period's clock times - so no weather figure can come from the
+     model at all, correct or not; readings arrive only through placeholders.
 
 Failure retries the composer once with a stricter prompt, then falls back to the
 deterministic template. The model never gets a third chance to be creative.
@@ -17,9 +20,10 @@ from typing import Any, Iterable
 
 from backend.loader import get_policy
 from backend.models import GraphState
-from backend.nodes import composer, fixed
+from backend.nodes import composer
 
 SOP_ID_RE = re.compile(r"SOP-[A-Z0-9]+-\d+")
+CLOCK_RE = re.compile(r"(?<![\d.])(\d{1,2}):(\d{2})(?!\d)")
 NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 
 
@@ -38,117 +42,108 @@ class GuardReport:
             "bad_numbers": self.bad_numbers,
         }
 
+    def fail(self, problem: str) -> None:
+        self.ok = False
+        self.problems.append(problem)
 
-def _numbers_in(text: str) -> list[float]:
-    return [float(m) for m in NUMBER_RE.findall(str(text))]
+
+def _clocks(text: str) -> list[str]:
+    return [f"{int(h):02d}:{m}" for h, m in CLOCK_RE.findall(str(text))]
 
 
-def allowed_numbers(*sources: Any) -> set[float]:
-    """Every figure the reply is permitted to contain, from snapshot + SOP text."""
+def allowed_numbers(*texts: str) -> set[float]:
+    """Every bare figure a draft may contain: the numbers literally written in these
+    texts, plus the hour of any clock time in them ("before 11:00" -> "before 11")."""
     out: set[float] = set()
-    for source in sources:
-        if source is None:
-            continue
-        if isinstance(source, str):
-            out.update(_numbers_in(source))
-        elif isinstance(source, dict):
-            out |= allowed_numbers(*source.values())
-        elif isinstance(source, (list, tuple, set)):
-            out |= allowed_numbers(*source)
-        elif isinstance(source, (int, float)) and not isinstance(source, bool):
-            out.add(float(source))
-    # a figure may legitimately be written rounded to the nearest whole number
-    out |= {round(v) for v in list(out)}
+    for text in map(str, texts):
+        out |= {float(hour) for hour, _ in CLOCK_RE.findall(text)}
+        out |= {float(n) for n in NUMBER_RE.findall(CLOCK_RE.sub(" ", text))}
     return out
 
 
-def _is_allowed(value: float, allowed: Iterable[float]) -> bool:
-    return any(abs(value - a) <= max(0.51, abs(a) * 0.02) for a in allowed)
+def allowed_clocks(*texts: str) -> set[str]:
+    return {clock for text in texts for clock in _clocks(text)}
 
 
 def check_reply(
-    reply: str,
-    matched_ids: Iterable[str],
+    draft: str,
+    surfaced_ids: list[str],
+    placeholders: Iterable[str],
     allowed: Iterable[float],
-    no_sop_sentence: str = fixed.NO_SOP_SENTENCE,
+    clocks: Iterable[str] = (),
 ) -> GuardReport:
     report = GuardReport()
-    matched = set(matched_ids)
-    allowed = set(allowed)
+    draft = draft or ""
+    allowed, clocks, placeholders = set(allowed), set(clocks), set(placeholders)
 
-    cited = SOP_ID_RE.findall(reply or "")
-    for sop_id in cited:
-        if sop_id not in matched:
-            report.ok = False
-            report.bad_ids.append(sop_id)
+    cited = SOP_ID_RE.findall(draft)
+    report.bad_ids = sorted({i for i in cited if i not in surfaced_ids})
     if report.bad_ids:
-        report.problems.append(f"cited SOP ids not in the matched set: {sorted(set(report.bad_ids))}")
+        report.fail(f"cited SOP ids that were not surfaced: {report.bad_ids}")
+    uncited = [i for i in surfaced_ids if i not in cited]
+    if uncited:
+        report.fail(f"surfaced SOPs not cited: {uncited}")
+    if cited and surfaced_ids and cited[0] != surfaced_ids[0]:
+        report.fail(f"the primary SOP {surfaced_ids[0]} is not cited first (got {cited[0]})")
 
-    stripped = SOP_ID_RE.sub(" ", reply or "")
-    for value in _numbers_in(stripped):
-        if not _is_allowed(value, allowed):
-            report.ok = False
-            report.bad_numbers.append(str(value))
+    unknown = sorted({p for p in composer.PLACEHOLDER_RE.findall(draft) if p not in placeholders})
+    if unknown:
+        report.fail(f"placeholders for readings that were not offered: {unknown}")
+
+    text = composer.PLACEHOLDER_RE.sub(" ", SOP_ID_RE.sub(" ", draft))
+    bad_clocks = sorted({c for c in _clocks(text) if c not in clocks})
+    numbers = [n for n in NUMBER_RE.findall(CLOCK_RE.sub(" ", text)) if float(n) not in allowed]
+    report.bad_numbers = sorted(set(numbers)) + bad_clocks
     if report.bad_numbers:
-        report.problems.append(
-            f"numbers with no source in the snapshot or SOP text: {sorted(set(report.bad_numbers))}"
-        )
-
-    if not cited and no_sop_sentence.lower() not in (reply or "").lower():
-        report.ok = False
-        report.problems.append("reply neither cites an SOP nor states that no SOP applies")
+        report.fail(f"figures typed by the model with no source in the SOP text: {report.bad_numbers}")
     return report
 
 
-def build_allowed(state: GraphState) -> tuple[set[float], list[str]]:
-    """Allowed figures and allowed ids for the current state."""
+def guard_inputs(state: GraphState) -> tuple[list[str], set[str], set[float], set[str]]:
+    """(surfaced ids, offered placeholders, allowed numbers, allowed clock times)."""
     policy = get_policy()
-    matched = state.get("matched") or []
-    ids = [m.sop_id for m in matched]
-    texts = [policy.sops[i].advice + " " + policy.sops[i].cite_as + " " + policy.sops[i].title for i in ids]
-    window = state.get("window")
-    snapshot = state.get("weather")
-    numbers = allowed_numbers(
-        texts,
-        window.values if window else None,
-        window.times if window else None,
-        snapshot.current if snapshot else None,
-        snapshot.derived if snapshot else None,
-    )
-    return numbers, ids
+    primary, secondary = composer.split(state["matched"], policy)
+    sops = [primary, *secondary]
+    window = state["window"]
+    numbers = composer.relevant_numbers(state["matched"], window, policy)
+    sop_text = [f"{s.advice} {s.cite_as} {s.title}" for s in sops]
+    # reading labels such as "next 24 hours" are shown to the model, so their digits are fair;
+    # the period's hours are allowed only as clock times ("17:00"), never as bare numbers
+    labels = [state["weather"].place.label] + [composer.label(name, policy) for name in numbers]
+    return ([s.id for s in sops], set(numbers), allowed_numbers(*sop_text, *labels),
+            allowed_clocks(*sop_text, composer.period_text(window)))
 
 
 def run(state: GraphState) -> dict[str, Any]:
-    """Guard node: validate, retry once stricter, then fall back to the template."""
+    """Guard node: validate the draft, retry once stricter, then fall back to the template."""
     policy = get_policy()
     trace = list(state.get("trace") or [])
-    numbers, ids = build_allowed(state)
+    ids, placeholders, numbers, clocks = guard_inputs(state)
 
-    report = check_reply(state.get("reply", ""), ids, numbers)
+    report = check_reply(state.get("draft", ""), ids, placeholders, numbers, clocks)
     if report.ok:
         trace.append("guard: passed")
-        return {"guard_report": report.as_dict(), "trace": trace}
+        return {"reply": composer.finalize(state["draft"], state),
+                "guard_report": report.as_dict(), "trace": trace}
 
     trace.append(f"guard: FAILED ({'; '.join(report.problems)}) - retrying with a stricter prompt")
     override = bool(state.get("situational_ids"))
     retry = composer.run(state, override=override, stricter=True)
-    second = check_reply(retry.get("reply", ""), ids, numbers)
+    second = check_reply(retry.get("draft", ""), ids, placeholders, numbers, clocks)
     if second.ok:
         trace.append("guard: retry passed")
-        return {"reply": retry["reply"], "guard_report": second.as_dict(), "trace": trace}
+        return {"reply": composer.finalize(retry["draft"], state),
+                "guard_report": second.as_dict(), "trace": trace}
 
     primary, secondary = composer.split(state["matched"], policy)
-    fallback = composer.template_reply(
-        state, primary, secondary, composer.relevant_numbers(state["matched"], state["window"], policy),
-        override,
-    )
-    final = check_reply(fallback, ids, numbers)
+    fallback = composer.template_reply(state, primary, secondary, override)
+    final = check_reply(fallback, ids, placeholders, numbers, clocks)
     trace.append(
         f"guard: retry also FAILED ({'; '.join(second.problems)}) - "
         f"fell back to the deterministic template (template guard ok={final.ok})"
     )
     return {
-        "reply": fallback,
+        "reply": composer.finalize(fallback, state),
         "guard_report": {**final.as_dict(), "fell_back": True, "first_failure": report.problems,
                          "retry_failure": second.problems},
         "trace": trace,

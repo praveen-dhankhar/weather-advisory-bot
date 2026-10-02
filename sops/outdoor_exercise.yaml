@@ -105,7 +105,9 @@ sops:
     title: Pleasantness of a walk or outing
     kind: fuzzy
     applies_to:
-      activity_tags_any: [leisure, exercise]
+      # leisure only: a cycling or running question must not be answered with a
+      # judgement about "a walk or an outing" (seen with the real model)
+      activity_tags_any: [leisure]
     fuzzy_criteria: >-
       Judge whether the period is pleasant for an unhurried walk or outing. It is
       pleasant when it is dry or nearly dry (precipitation probability under about

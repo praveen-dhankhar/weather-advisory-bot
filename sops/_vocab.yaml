@@ -2,6 +2,10 @@
 # a tag or a relative time window.
 version: 1
 
+# SOP categories. Every SOP's `category` must be one of these, so a typo fails
+# startup instead of creating a fifth category nobody meant.
+categories: [outdoor_exercise, travel, vulnerable_groups, situational]
+
 # Who the advice is about. SOP `applies_to.audience_any` draws from this list.
 audiences: [general, child, elderly, pet]
 

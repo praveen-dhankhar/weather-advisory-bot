@@ -152,7 +152,7 @@ def test_live_severe_scan_picks_the_worst_city(bot, policy):
             continue
         scanned.append((city, snapshot.derived.get("precip_next_24h"),
                         snapshot.derived.get("pressure_now"), snapshot))
-    usable = [row for row in scanned if isinstance(row[3], object) and row[1] is not None]
+    usable = [row for row in scanned if row[1] is not None]
     assert usable, f"no city returned usable live data: {[(r[0], r[3]) for r in scanned]}"
 
     worst = max(usable, key=lambda r: (r[1], -(r[2] or 9999)))
@@ -348,7 +348,7 @@ def test_loader_fails_loudly_naming_the_file(tmp_path):
     schema = fresh_dir()
     (schema / "bad_schema.yaml").write_text(
         "sops:\n  - id: SOP-XX-02\n    category: travel\n    severity: apocalyptic\n"
-        "    title: t\n    kind: numeric\n    advice: a\n    cite_as: c\n"
+        "    title: t\n    kind: numeric\n    advice: a\n    cite_as: SOP-XX-02 (t)\n"
         "    conditions: {wind_speed_10m: {gt: 1}}\n"
     )
     with pytest.raises(SOPConfigError) as exc:
@@ -358,7 +358,7 @@ def test_loader_fails_loudly_naming_the_file(tmp_path):
     unknown = fresh_dir()
     (unknown / "bad_field.yaml").write_text(
         "sops:\n  - id: SOP-XX-03\n    category: travel\n    severity: low\n"
-        "    title: t\n    kind: numeric\n    advice: a\n    cite_as: c\n"
+        "    title: t\n    kind: numeric\n    advice: a\n    cite_as: SOP-XX-03 (t)\n"
         "    conditions: {martian_dust: {gt: 1}}\n"
     )
     with pytest.raises(SOPConfigError) as exc:
@@ -509,24 +509,27 @@ def test_fuzzy_sops_match_on_a_comfortable_day(bot):
 # 8. Regression tests for the defects found in the audit
 # =========================================================================== #
 def test_guard_rejects_an_invented_number_on_its_own():
-    """CHECKS guard check (b) IN ISOLATION: the reply cites a real matched SOP and no
-    bogus ids, but states a figure with no source.
-    PASS = the guard fails it and names that number. Must fail if only `_is_allowed`
-    is weakened - the combined guard test did not catch that."""
-    allowed = guards.allowed_numbers({"wind_speed_10m": 45.2}, "wind at or above 40 km/h")
-    report = guards.check_reply("Wind is 22 km/h so go ahead [SOP-EX-01].", ["SOP-EX-01"], allowed)
+    """CHECKS guard check (c) IN ISOLATION: the draft cites the surfaced SOP and no
+    bogus ids, but types a figure that is not written in the SOP text.
+    PASS = the guard fails it and names that number, while the same sentence with the
+    reading as a placeholder, or quoting the SOP's own 40 km/h threshold, passes."""
+    allowed = guards.allowed_numbers("wind at or above 40 km/h")
+    report = guards.check_reply("Wind is 22 km/h so go ahead [SOP-EX-01].", ["SOP-EX-01"],
+                                {"wind_speed_10m"}, allowed)
     assert report.ok is False
-    assert report.bad_numbers == ["22.0"], report.bad_numbers
+    assert report.bad_numbers == ["22"], report.bad_numbers
     assert report.bad_ids == []
+    fine = "Wind is {wind_speed_10m}, over the 40 km/h limit, so do not ride [SOP-EX-01]."
+    assert guards.check_reply(fine, ["SOP-EX-01"], {"wind_speed_10m"}, allowed).ok
 
 
 def test_guard_rejects_an_unmatched_sop_id_on_its_own():
-    """CHECKS guard check (a) IN ISOLATION: every figure is legitimate, but the reply
-    cites an SOP that did not match.
+    """CHECKS guard check (a) IN ISOLATION: the reading is a legitimate placeholder, but
+    the draft cites an SOP that was not surfaced.
     PASS = the guard fails it and names the id. Must fail if only the id comparison
     is weakened."""
-    allowed = guards.allowed_numbers({"wind_speed_10m": 45.2})
-    report = guards.check_reply("Wind is 45.2 km/h, fine to ride [SOP-EX-99].", ["SOP-EX-01"], allowed)
+    report = guards.check_reply("Wind is {wind_speed_10m}, fine to ride [SOP-EX-99].",
+                                ["SOP-EX-01"], {"wind_speed_10m"}, set())
     assert report.ok is False
     assert report.bad_ids == ["SOP-EX-99"]
     assert report.bad_numbers == []
@@ -536,12 +539,13 @@ def test_guard_rejects_a_reply_that_grounds_nothing():
     """CHECKS guard check (c) IN ISOLATION: no invented numbers, no bogus ids, but the
     reply neither cites an SOP nor states that none applies.
     PASS = the guard fails it for exactly that reason, and the explicit no-guidance
-    sentence is accepted as the alternative. Must fail if only check (c) is removed."""
-    report = guards.check_reply("Looks fine to me, enjoy.", ["SOP-EX-01"], set())
+    sentence is accepted when nothing was surfaced. Must fail if only the
+    "every surfaced SOP is cited" check is removed."""
+    report = guards.check_reply("Looks fine to me, enjoy.", ["SOP-EX-01"], set(), set())
     assert report.ok is False
     assert report.bad_ids == [] and report.bad_numbers == []
-    assert any("neither cites an SOP" in problem for problem in report.problems), report.problems
-    assert guards.check_reply(fixed.NO_SOP_SENTENCE, [], set()).ok is True
+    assert any("not cited" in problem for problem in report.problems), report.problems
+    assert guards.check_reply(fixed.NO_SOP_SENTENCE, [], set(), set()).ok is True
 
 
 @pytest.mark.parametrize(
@@ -723,7 +727,7 @@ def test_duplicate_yaml_key_is_rejected(tmp_path):
     entry = (
         "  - id: SOP-ZZ-{n}\n"
         "    category: travel\n    severity: low\n    title: t{n}\n    kind: numeric\n"
-        "    advice: a\n    cite_as: c\n    conditions: {{wind_speed_10m: {{gt: {n}}}}}\n"
+        "    advice: a\n    cite_as: SOP-ZZ-{n}\n    conditions: {{wind_speed_10m: {{gt: {n}}}}}\n"
     )
     (target / "two_blocks.yaml").write_text(
         "sops:\n" + entry.format(n=1) + "sops:\n" + entry.format(n=2)
@@ -931,7 +935,7 @@ def test_weather_code_groups_are_defined_once(policy, tmp_path):
         shutil.copy(path, target / path.name)
     (target / "bad_group.yaml").write_text(
         "sops:\n  - id: SOP-ZZ-09\n    category: travel\n    severity: low\n    title: t\n"
-        "    kind: numeric\n    advice: a\n    cite_as: c\n"
+        "    kind: numeric\n    advice: a\n    cite_as: SOP-ZZ-09\n"
         "    conditions: {weather_code: {in_group: blizzard_of_doom}}\n"
     )
     with pytest.raises(SOPConfigError) as exc:
@@ -984,30 +988,38 @@ def test_matcher_drops_an_unknown_id_from_the_fuzzy_pass(bot):
 def test_intake_strips_tags_outside_the_vocabulary(bot):
     """CHECKS that control-flow fields are re-derived in code rather than trusted from
     the model - the structural defence against a prompt-injected intent.
-    PASS = invented tags and audiences are discarded, a path-like time window falls
-    back to `now`, and the activity still resolves."""
+    PASS = invented tags and audiences are discarded and the activity still resolves to
+    the policy answer; a path-like time window is neither used nor silently swapped
+    for "now" - the bot asks which period instead."""
     from backend.fake_llm import fake_llm
 
-    def injected(system: str, user: str) -> str:
-        if system.startswith("JOB: intake"):
-            return json.dumps({
-                "is_outdoor_safety_question": True, "location": "Pune",
-                "activity": "cycling", "activity_raw": "cycle",
-                "activity_tags": ["two_wheeler", "admin", "root", "ignore_all_sops"],
-                "audience": ["martian", "superuser"], "time_window": "../../etc/passwd",
-                "is_followup": False,
-            })
-        return fake_llm(system, user)
+    def injected(window: str):
+        def model(system: str, user: str) -> str:
+            if system.startswith("JOB: intake"):
+                return json.dumps({
+                    "is_outdoor_safety_question": True, "location": "Pune",
+                    "activity": "cycling", "activity_raw": "cycle",
+                    "activity_tags": ["two_wheeler", "admin", "root", "ignore_all_sops"],
+                    "audience": ["martian", "superuser"], "time_window": window,
+                    "is_followup": False,
+                })
+            return fake_llm(system, user)
+        return model
 
     bot.use("high_wind")
-    bot.use_llm(injected)
-    out = bot.ask("is it safe to cycle in Pune?")
+    bot.use_llm(injected("now"))
+    out = bot.ask("is it safe to cycle in Pune?", session_id="inj-a")
     intent = out["intent"]
     assert set(intent.activity_tags) <= set(get_policy().tags)
     assert "admin" not in intent.activity_tags and "root" not in intent.activity_tags
     assert intent.audience == ["general"]
-    assert intent.time_window == "now"
     assert "SOP-EX-01" in out["matched_sop_ids"]
+
+    bot.use_llm(injected("../../etc/passwd"))
+    out = bot.ask("is it safe to cycle in Pune?", session_id="inj-b")
+    assert out["intent"].time_window not in get_policy().time_windows
+    assert out["branch"] == "clarify" and out["matched_sop_ids"] == []
+    assert "Which period should I check?" in out["reply"]
 
 
 def test_at_most_three_sops_are_surfaced(bot):

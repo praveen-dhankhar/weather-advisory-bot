@@ -1,9 +1,11 @@
 """Open-Meteo client and time-window resolution. Deterministic, no LLM.
 
 The query lists are built from ``sops/_fields.yaml``, so adding a weather
-variable is a data change. Every network call has a timeout, and every failure
-mode (timeout, HTTP error, bad JSON, missing block) raises a typed error that the
-graph routes to a single failure branch.
+variable is a data change. Every network call has a timeout, every payload is
+validated with Pydantic before anything reads it, and every failure mode (timeout,
+HTTP error, bad JSON, wrong shape, missing variable) raises a typed error that the
+graph routes to a single failure branch. Error messages are written for the user;
+the raw cause is logged, never shown.
 
 Snapshot dictionaries are keyed by *Open-Meteo variable name* - the raw payload
 names - while SOP conditions use the field names from ``_fields.yaml``;
@@ -13,15 +15,20 @@ names - while SOP conditions use the field names from ``_fields.yaml``;
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
 import unicodedata
 from typing import Any, Optional
 
 import httpx
+from pydantic import ValidationError
 
 from backend import conditions
 from backend.loader import Policy, get_policy
 from backend.models import (
+    ForecastPayload,
+    GeocodeResponse,
+    GeocodeResult,
     LocationAmbiguous,
     LocationUnresolved,
     ResolvedLocation,
@@ -30,11 +37,14 @@ from backend.models import (
     WindowValues,
 )
 
+log = logging.getLogger("advisory")
+
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
-FORECAST_DAYS = 3
+FORECAST_DAYS = 3  # floor; a time window further out in _vocab.yaml raises it (see fetch_forecast)
 PAST_HOURS = 6  # needed for the pressure-trend derived signal
+GEOCODE_COUNT = 10
 # A same-named place in another country is only accepted silently when it clearly
 # dominates: at least this many people, and this many times the runner-up.
 MIN_POPULATION = 50_000
@@ -43,6 +53,32 @@ POPULATION_DOMINANCE = 10
 
 def _simulated_down() -> bool:
     return os.getenv("SIMULATE_WEATHER_DOWN", "0").strip() in {"1", "true", "yes"}
+
+
+def _get_json(url: str, params: dict[str, Any], service: str, client: Optional[httpx.Client]) -> Any:
+    """GET + status check + JSON decode. Raises WeatherUnavailable with a user-safe reason;
+    the raw cause (URL, status line, body) goes to the log only."""
+    owns = client is None
+    client = client or httpx.Client(timeout=TIMEOUT)
+    try:
+        response = client.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
+    except httpx.TimeoutException as exc:
+        log.warning("%s timed out: %r", service, exc)
+        raise WeatherUnavailable(f"the {service} timed out") from exc
+    except httpx.HTTPStatusError as exc:
+        log.warning("%s returned an error: %r", service, exc)
+        raise WeatherUnavailable(f"the {service} returned an error response") from exc
+    except httpx.HTTPError as exc:
+        log.warning("%s unreachable: %r", service, exc)
+        raise WeatherUnavailable(f"the {service} could not be reached") from exc
+    except ValueError as exc:
+        log.warning("%s returned non-JSON: %r", service, exc)
+        raise WeatherUnavailable(f"the {service} returned unreadable data") from exc
+    finally:
+        if owns:
+            client.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -54,16 +90,12 @@ def _normalise_place(name: str) -> str:
     return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold().strip()
 
 
-def _population(result: dict[str, Any]) -> int:
-    value = result.get("population")
-    return int(value) if isinstance(value, (int, float)) else 0
+def _population(result: GeocodeResult) -> float:
+    return result.population or 0
 
 
-def _label(result: dict[str, Any]) -> str:
-    bits = [result.get("name", "?")] + [
-        str(b) for b in (result.get("admin1"), result.get("country")) if b
-    ]
-    return ", ".join(bits)
+def _label(result: GeocodeResult) -> str:
+    return ", ".join([result.name] + [b for b in (result.admin1, result.country) if b])
 
 
 def geocode(city: str, client: Optional[httpx.Client] = None) -> ResolvedLocation:
@@ -75,65 +107,69 @@ def geocode(city: str, client: Optional[httpx.Client] = None) -> ResolvedLocatio
       * no results -> :class:`LocationUnresolved`;
       * no exact name match (accent- and case-insensitive) -> :class:`LocationAmbiguous`,
         because the place the user typed is not in the index at all;
+      * "Name, Qualifier" ("Springfield, Illinois", "Bhopal, India") -> only exact
+        matches whose state, district, country or country code equals a qualifier
+        count; the most populous of those wins, none -> :class:`LocationAmbiguous`.
+        This is how a user answers the bot's own "which one did you mean?";
       * one exact match, or several within a single country -> take the most populous;
       * exact matches in several countries -> accept the most populous ONLY if it has
         at least MIN_POPULATION people and POPULATION_DOMINANCE times the runner-up;
         otherwise raise :class:`LocationAmbiguous` and let the graph ask.
     """
-    name = (city or "").strip()
-    if not name:
-        raise LocationUnresolved("no place name given")
+    query = " ".join((city or "").split())[:100]
+    if not query:
+        raise LocationUnresolved("no place name was given")
     if _simulated_down():
-        raise WeatherUnavailable("SIMULATE_WEATHER_DOWN=1 (geocoding call not attempted)")
+        raise WeatherUnavailable("the weather service is switched off for this demo (SIMULATE_WEATHER_DOWN)")
 
-    params = {"name": name, "count": 5, "language": "en", "format": "json"}
+    name, _, qualifier = query.partition(",")
+    name = name.strip()
+    qualifiers = {_normalise_place(q) for q in qualifier.split(",") if q.strip()}
+    params = {"name": name, "count": GEOCODE_COUNT, "language": "en", "format": "json"}
+    payload = _get_json(GEOCODE_URL, params, "place-name lookup service", client)
     try:
-        owns = client is None
-        client = client or httpx.Client(timeout=TIMEOUT)
-        try:
-            response = client.get(GEOCODE_URL, params=params)
-            response.raise_for_status()
-            payload = response.json()
-        finally:
-            if owns:
-                client.close()
-    except httpx.HTTPError as exc:
-        raise LocationUnresolved(f"geocoding service unreachable for {name!r}: {exc}") from exc
-    except ValueError as exc:
-        raise LocationUnresolved(f"geocoding returned unreadable JSON for {name!r}") from exc
-
-    results = payload.get("results") or []
+        results = GeocodeResponse.model_validate(payload).results
+    except ValidationError as exc:
+        log.warning("geocoding payload failed validation: %s", exc)
+        raise WeatherUnavailable("the place-name lookup service returned data that failed validation") from exc
     if not results:
-        raise LocationUnresolved(f"no place found matching {name!r}")
+        raise LocationUnresolved(f"no place found matching {query!r}")
 
     wanted = _normalise_place(name)
-    exact = [r for r in results if _normalise_place(r.get("name", "")) == wanted]
+    exact = [r for r in results if _normalise_place(r.name) == wanted]
     if not exact:
-        raise LocationAmbiguous(name, [_label(r) for r in results[:3]])
+        raise LocationAmbiguous(query, [_label(r) for r in results[:3]])
 
     ranked = sorted(exact, key=_population, reverse=True)
-    if len(ranked) == 1 or len({r.get("country") for r in ranked}) == 1:
+    if qualifiers:
+        named = [r for r in ranked if qualifiers & {
+            _normalise_place(x) for x in (r.admin1, r.admin2, r.country, r.country_code) if x}]
+        if named:
+            return location_from_geocode(named[0])
+        raise LocationAmbiguous(query, [_label(r) for r in ranked[:3]])
+    if len(ranked) == 1 or len({r.country for r in ranked}) == 1:
         return location_from_geocode(ranked[0])
 
     best, runner_up = _population(ranked[0]), _population(ranked[1])
     if best >= MIN_POPULATION and best >= POPULATION_DOMINANCE * max(runner_up, 1):
         return location_from_geocode(ranked[0])
-    raise LocationAmbiguous(name, [_label(r) for r in ranked[:3]])
+    raise LocationAmbiguous(query, [_label(r) for r in ranked[:3]])
 
 
-def location_from_geocode(result: dict[str, Any]) -> ResolvedLocation:
+def location_from_geocode(result: GeocodeResult | dict[str, Any]) -> ResolvedLocation:
     """Build a ResolvedLocation from one Open-Meteo geocoding result."""
     try:
-        return ResolvedLocation(
-            name=result["name"],
-            country=result.get("country"),
-            admin1=result.get("admin1"),
-            latitude=float(result["latitude"]),
-            longitude=float(result["longitude"]),
-            timezone=result.get("timezone") or "UTC",
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise LocationUnresolved(f"geocoding result missing coordinates: {result!r}") from exc
+        place = GeocodeResult.model_validate(result) if isinstance(result, dict) else result
+    except ValidationError as exc:
+        raise LocationUnresolved("the place-name lookup returned a result without valid coordinates") from exc
+    return ResolvedLocation(
+        name=place.name,
+        country=place.country,
+        admin1=place.admin1,
+        latitude=place.latitude,
+        longitude=place.longitude,
+        timezone=place.timezone or "UTC",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -156,37 +192,24 @@ def fetch_forecast(
     policy: Optional[Policy] = None,
     client: Optional[httpx.Client] = None,
 ) -> WeatherSnapshot:
-    """Fetch current + hourly + daily values for one point."""
+    """Fetch current + hourly values for one point, with the variables named explicitly."""
     policy = policy or get_policy()
     if _simulated_down():
-        raise WeatherUnavailable("SIMULATE_WEATHER_DOWN=1 (forecast call not attempted)")
+        raise WeatherUnavailable("the weather service is switched off for this demo (SIMULATE_WEATHER_DOWN)")
 
     current_vars, hourly_vars = _query_variables(policy)
+    # A time window added to _vocab.yaml further out than the floor still gets data.
+    furthest = max(spec.day_offset for spec in policy.time_windows.values())
     params = {
         "latitude": lat,
         "longitude": lon,
         "current": ",".join(current_vars),
         "hourly": ",".join(hourly_vars),
-        "daily": ",".join(policy.daily),
         "timezone": "auto",
-        "forecast_days": FORECAST_DAYS,
+        "forecast_days": max(FORECAST_DAYS, furthest + 2),  # +2: the next-24h signals run past midnight
         "past_hours": PAST_HOURS,
     }
-    try:
-        owns = client is None
-        client = client or httpx.Client(timeout=TIMEOUT)
-        try:
-            response = client.get(FORECAST_URL, params=params)
-            response.raise_for_status()
-            payload = response.json()
-        finally:
-            if owns:
-                client.close()
-    except httpx.HTTPError as exc:
-        raise WeatherUnavailable(f"Open-Meteo forecast unreachable: {exc}") from exc
-    except ValueError as exc:
-        raise WeatherUnavailable("Open-Meteo forecast returned unreadable JSON") from exc
-
+    payload = _get_json(FORECAST_URL, params, "weather service", client)
     return snapshot_from_payload(payload, place, policy)
 
 
@@ -195,52 +218,58 @@ def snapshot_from_payload(
     place: ResolvedLocation,
     policy: Optional[Policy] = None,
 ) -> WeatherSnapshot:
-    """Build a snapshot from a forecast payload (live response or recorded fixture)."""
+    """Build a snapshot from a forecast payload (live response or recorded fixture).
+
+    Raises WeatherUnavailable unless the payload validates as :class:`ForecastPayload`
+    and carries every hourly variable that was requested - a partial or malformed
+    payload never becomes a partial forecast.
+    """
     policy = policy or get_policy()
-    current = payload.get("current")
-    hourly = payload.get("hourly")
-    if not isinstance(current, dict) or not isinstance(hourly, dict):
-        raise WeatherUnavailable("Open-Meteo payload has no `current`/`hourly` block")
-
-    times = hourly.get("time")
-    if not isinstance(times, list) or not times:
-        raise WeatherUnavailable("Open-Meteo payload has no hourly timeline")
-
+    parsed = _parse_forecast(payload)
     _, hourly_vars = _query_variables(policy)
-    missing = [v for v in hourly_vars if v not in hourly]
+    missing = [v for v in hourly_vars if v not in parsed.hourly]
     if missing:
-        raise WeatherUnavailable(f"Open-Meteo payload is missing hourly variables: {missing}")
-
-    current_time = str(current.get("time") or times[0])
-    series = {k: list(v) for k, v in hourly.items() if k != "time" and isinstance(v, list)}
-    current_values = {
-        k: (float(v) if isinstance(v, (int, float)) else None)
-        for k, v in current.items()
-        if k not in {"time", "interval"}
-    }
+        log.warning("forecast payload is missing hourly variables %s", missing)
+        raise WeatherUnavailable("the weather service left out values that were asked for")
 
     ctx = conditions.DerivedContext(
-        current=current_values,
-        hourly=series,
-        times=[str(t) for t in times],
-        now_index=now_index(times, current_time),
+        current=parsed.current,
+        hourly=parsed.hourly,
+        times=parsed.hourly_time,
+        now_index=now_index(parsed.hourly_time, parsed.current_time),
     )
-    derived = conditions.compute_derived(ctx, policy.derived)
-
-    units = {**(payload.get("current_units") or {}), **(payload.get("hourly_units") or {})}
-    place = place.model_copy(update={"timezone": payload.get("timezone") or place.timezone})
-
     return WeatherSnapshot(
-        place=place,
+        place=place.model_copy(update={"timezone": parsed.timezone or place.timezone}),
         fetched_at=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        current_time=current_time,
-        current=current_values,
-        hourly_times=[str(t) for t in times],
-        hourly=series,
-        daily={k: list(v) for k, v in (payload.get("daily") or {}).items()},
-        derived=derived,
-        units={k: str(v) for k, v in units.items()},
+        current_time=parsed.current_time,
+        current=parsed.current,
+        hourly_times=parsed.hourly_time,
+        hourly=parsed.hourly,
+        derived=conditions.compute_derived(ctx, policy.derived),
+        units=parsed.units,
     )
+
+
+def _parse_forecast(payload: Any) -> ForecastPayload:
+    """Validate the raw forecast JSON. Every shape problem is one typed error."""
+    try:
+        if not isinstance(payload, dict):
+            raise TypeError(f"expected a JSON object, got {type(payload).__name__}")
+        current = dict(payload["current"])
+        hourly = dict(payload["hourly"])
+        current.pop("interval", None)
+        units = {**(payload.get("current_units") or {}), **(payload.get("hourly_units") or {})}
+        return ForecastPayload(
+            timezone=payload.get("timezone"),
+            current_time=current.pop("time"),
+            current=current,
+            hourly_time=hourly.pop("time"),
+            hourly=hourly,
+            units={str(k): str(v) for k, v in units.items()},
+        )
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:  # ValidationError is a ValueError
+        log.warning("forecast payload failed validation: %s", exc)
+        raise WeatherUnavailable("the weather service returned data that failed validation") from exc
 
 
 def get_weather(city: str, policy: Optional[Policy] = None) -> WeatherSnapshot:
@@ -339,9 +368,10 @@ def resolve_window(
         for i, stamp in enumerate(snapshot.hourly_times)
         if _date_of(stamp) == target_date and start_hour <= _hour_of(stamp) <= end_hour
     ]
-    # Never advise on hours that have already passed today.
+    # Never advise on hours that have already passed today. A period that is over
+    # yields no slots, and the graph says so instead of answering about old hours.
     if spec.day_offset == 0:
-        slots = [i for i in slots if i >= index] or slots[-1:]
+        slots = [i for i in slots if i >= index]
 
     if start_hour > end_hour or not slots:
         return WindowValues(window=window, label=spec.label, times=[], values={},

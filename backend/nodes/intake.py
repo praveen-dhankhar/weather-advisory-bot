@@ -17,6 +17,12 @@ from pydantic import ValidationError
 from backend import llm
 from backend.loader import Policy, get_policy
 from backend.models import GraphState, Intent
+from backend.nodes import fixed
+
+UNSUPPORTED = "unsupported"  # the user named a period the vocabulary has no window for
+# The model must answer every one of these; a missing key is malformed output, not a default.
+REQUIRED_KEYS = frozenset({"is_outdoor_safety_question", "location", "activity",
+                           "time_window", "is_followup"})
 
 INTAKE_SYSTEM = """JOB: intake
 You extract structured intent for an outdoor-safety advisory bot. You do not give
@@ -44,7 +50,9 @@ Return ONE JSON object, no prose, no code fences, with exactly these keys:
       "same for the dog?" - return the audience named in THIS message and ignore
       the established one. The established audience is only a fallback for when
       this message names nobody.
-  time_window: exactly one key from TIME_WINDOWS below. Use "now" if unstated.
+  time_window: exactly one key from TIME_WINDOWS below when this message names a
+      time; null when this message names no time at all; "unsupported" when it
+      names a time no key covers (next week, Saturday, in three days).
   is_followup: true if the message only makes sense against the earlier turn
       (e.g. "what about this evening?", "and tomorrow?").
 
@@ -122,11 +130,30 @@ def detect_audience(policy: Policy, message: str) -> list[str]:
     return found
 
 
+def window_key(policy: Policy, proposed: Optional[str]) -> Optional[str]:
+    """A vocabulary key from the model's proposal (key or label, any case), None when
+    it named no time, UNSUPPORTED for anything else - never a silent substitute."""
+    if proposed is None:
+        return None
+    wanted = str(proposed).strip().lower().replace("_", " ")
+    for key, spec in policy.time_windows.items():
+        if wanted in (key.replace("_", " "), spec.label.lower()):
+            return key
+    return UNSUPPORTED
+
+
 def normalise(intent: Intent, message: str, facts: dict[str, Any], policy: Policy) -> Intent:
     """Re-derive every control-flow field in code. The model only suggests."""
+    # Answering the bot's own "which place?" / "which period?" with just a place or a
+    # period continues the question that was asked, whatever the model makes of it.
+    answers_clarify = facts.get("last_branch") == "clarify" and (
+        bool(intent.location) or intent.time_window is not None
+    )
+    followup = intent.is_followup or answers_clarify
+
     activity = intent.activity if intent.activity in policy.activities else None
     activity = activity or resolve_activity(policy, intent.activity_raw, message)
-    if activity is None and intent.is_followup:
+    if activity is None and followup:
         activity = facts.get("activity")
 
     tags = {t for t in intent.activity_tags if t in policy.tags}
@@ -138,21 +165,22 @@ def normalise(intent: Intent, message: str, facts: dict[str, Any], policy: Polic
     if not audience:
         audience = [a for a in intent.audience if a in policy.audiences and a != "general"]
     if not audience:
-        audience = ["general"] if not intent.is_followup else list(
-            facts.get("audience") or ["general"]
-        )
+        audience = ["general"] if not followup else list(facts.get("audience") or ["general"])
     if "child" in audience:
         tags.add("with_children")
     if "elderly" in audience:
         tags.add("with_elderly")
 
-    window = intent.time_window if intent.time_window in policy.time_windows else "now"
-    location = (intent.location or "").strip() or (facts.get("location") if intent.is_followup else None)
-    if not location:
-        location = facts.get("location")  # a session location always beats asking again
+    window = window_key(policy, intent.time_window)
+    if window is None:  # no time named: a follow-up keeps the session's period
+        inherited = facts.get("time_window")
+        window = inherited if followup and inherited in policy.time_windows else "now"
+    location = (intent.location or "").strip() or facts.get("location")  # never ask twice
 
     return intent.model_copy(
         update={
+            "is_outdoor_safety_question": intent.is_outdoor_safety_question or answers_clarify,
+            "is_followup": followup,
             "activity": activity,
             "activity_tags": sorted(tags),
             "audience": audience,
@@ -171,13 +199,19 @@ def run(state: GraphState) -> dict[str, Any]:
 
     try:
         raw = llm.chat_json(system, user)
+        missing = sorted(REQUIRED_KEYS - set(raw))
+        if missing:
+            raise llm.LLMBadOutput(f"intent is missing required keys {missing}")
         intent = Intent(**{k: v for k, v in raw.items() if k in Intent.model_fields})
+    except llm.LLMUnavailable as exc:
+        trace.append(f"intake: LLM unavailable ({exc})")
+        return {"branch": "fail", "error": str(exc), "failure": "llm", "trace": trace}
     except (llm.LLMError, ValidationError, TypeError) as exc:
         trace.append(f"intake: unparseable intent ({type(exc).__name__}: {exc})")
         return {
             "branch": "fail",
-            "error": str(exc),
-            "failed_before_fetch": True,  # do not blame the forecast for this
+            "error": "the request could not be turned into a structured question",
+            "failure": "intake",  # do not blame the forecast for this
             "trace": trace,
         }
 
@@ -186,4 +220,9 @@ def run(state: GraphState) -> dict[str, Any]:
         f"intake: activity={intent.activity} tags={intent.activity_tags} "
         f"audience={intent.audience} window={intent.time_window} location={intent.location}"
     )
+    if intent.time_window == UNSUPPORTED:
+        periods = ", ".join(spec.label for spec in policy.time_windows.values())
+        trace.append("intake: the period asked about has no time window; asking instead of guessing")
+        return {"intent": intent, "branch": "clarify",
+                "clarify_question": fixed.PERIOD_TEXT.format(periods=periods), "trace": trace}
     return {"intent": intent, "trace": trace}

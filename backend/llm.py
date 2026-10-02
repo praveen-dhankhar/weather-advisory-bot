@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import json
+import logging
 import os
 import re
 from typing import Any, Callable, Optional
@@ -16,6 +17,7 @@ from typing import Any, Callable, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
+log = logging.getLogger("advisory")
 
 FakeLLM = Callable[[str, str], str]  # (system, user) -> raw text
 _fake: Optional[FakeLLM] = None
@@ -23,6 +25,14 @@ _fake: Optional[FakeLLM] = None
 
 class LLMError(Exception):
     """The model could not be reached, or returned something unusable."""
+
+
+class LLMUnavailable(LLMError):
+    """No key, a network failure, a timeout, a provider error. Not the user's fault."""
+
+
+class LLMBadOutput(LLMError):
+    """The model answered, but not with the JSON object that was asked for."""
 
 
 def set_fake(fn: Optional[FakeLLM]) -> None:
@@ -42,7 +52,7 @@ OPENAI_COMPATIBLE = {
     "nvidia": {
         "key": "NVIDIA_API_KEY",
         "base_url": "https://integrate.api.nvidia.com/v1",
-        "model": "meta/llama-3.3-70b-instruct",
+        "model": "nvidia/nemotron-3-super-120b-a12b",  # verified; llama-3.3-70b answers 410 Gone
     },
 }
 
@@ -80,26 +90,32 @@ def _defaults() -> tuple[str, str, Optional[str], str]:
     """(provider, model, base_url, key env var) from the environment."""
     provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
     spec = OPENAI_COMPATIBLE.get(provider)
-    fallback = spec["model"] if spec else "claude-sonnet-5"
+    fallback = spec["model"] if spec else "claude-sonnet-5-5"
     key = spec["key"] if spec else "ANTHROPIC_API_KEY"
     base_url = os.getenv("LLM_BASE_URL", "").strip() or (spec["base_url"] if spec else None)
     return provider, os.getenv("LLM_MODEL", fallback).strip(), base_url, key
 
 
 def chat(system: str, user: str, temperature: float = 0.0) -> str:
-    """One turn, text in, text out."""
+    """One turn, text in, text out.
+
+    Failures raise :class:`LLMUnavailable` with a message safe to show anyone; the
+    provider's own error text (which can echo request details) is logged, not returned.
+    """
     if _fake is not None:
         return _fake(system, user)
     provider, name, base_url, key = _defaults()
     api_key = os.getenv(key, "")
     if not api_key:
-        raise LLMError(f"{key} is not set (copy .env.example to .env)")
+        log.warning("%s is not set (copy .env.example to .env)", key)
+        raise LLMUnavailable("no API key is configured for the language model")
     try:
         response = _model(provider, name, temperature, base_url, api_key).invoke(
             [("system", system), ("human", user)]
         )
     except Exception as exc:  # provider SDKs raise their own hierarchies
-        raise LLMError(f"{provider}/{name} call failed: {exc}") from exc
+        log.warning("LLM call to %s/%s failed: %s", provider, name, exc)
+        raise LLMUnavailable(f"the language model call failed ({type(exc).__name__})") from exc
     content = response.content
     if isinstance(content, list):  # Anthropic returns content blocks
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
@@ -118,13 +134,13 @@ def chat_json(system: str, user: str, temperature: float = 0.0) -> dict[str, Any
     except json.JSONDecodeError:
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if not match:
-            raise LLMError(f"model did not return JSON: {raw[:200]!r}")
+            raise LLMBadOutput(f"model did not return JSON: {raw[:200]!r}")
         try:
             parsed = json.loads(match.group(0))
         except json.JSONDecodeError as exc:
-            raise LLMError(f"model returned malformed JSON: {raw[:200]!r}") from exc
+            raise LLMBadOutput(f"model returned malformed JSON: {raw[:200]!r}") from exc
     if not isinstance(parsed, dict):
-        raise LLMError(f"model returned {type(parsed).__name__}, expected a JSON object")
+        raise LLMBadOutput(f"model returned {type(parsed).__name__}, expected a JSON object")
     return parsed
 
 

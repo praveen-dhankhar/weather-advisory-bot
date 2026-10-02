@@ -2,9 +2,10 @@ r"""The LangGraph: nodes, conditional edges, four genuinely different endings.
 
     START -> intake -> location -> weather -> match -> {override|compose} -> guard -> END
                  |         |          |         |
-                 |         +----------+---------+--> failure_node (fixed text)
-                 +--> no_match_node (fixed text)   \--> no_match_node
-                 +--> clarify_node (fixed text)
+                 |         |          |         +--> no_match_node (fixed text)
+                 +---------+----------+------------> failure_node (fixed text)
+                 +--> no_match_node (fixed text)
+                 +---------+-----------------------> clarify_node (fixed text)
 
 `python -m backend.graph "is it safe to cycle in Pune this evening?"` runs it.
 """
@@ -61,23 +62,38 @@ def location_node(state: GraphState) -> dict[str, Any]:
         }
     except (LocationUnresolved, WeatherUnavailable) as exc:
         trace.append(f"location: FAILED for {name!r} ({type(exc).__name__}: {exc})")
-        return {"branch": "fail", "error": str(exc), "failed_before_fetch": False, "trace": trace}
+        return {"branch": "fail", "error": str(exc), "failure": "weather", "trace": trace}
     trace.append(f"location: {name!r} -> {place.label} ({place.latitude}, {place.longitude})")
     return {"location": place, "trace": trace}
 
 
 def weather_node(state: GraphState) -> dict[str, Any]:
+    """Fetch a fresh snapshot every turn - a follow-up never reuses an earlier one - and
+    refuse to go on when the asked-about period has no usable hours in it."""
     trace = list(state.get("trace") or [])
     place = state["location"]
+    policy = get_policy()
     try:
         snapshot: WeatherSnapshot = weather.fetch_forecast(
-            place.latitude, place.longitude, place, get_policy()
+            place.latitude, place.longitude, place, policy
         )
     except (WeatherUnavailable, LocationUnresolved) as exc:
         trace.append(f"weather: FAILED ({type(exc).__name__}: {exc})")
-        return {"branch": "fail", "error": str(exc), "trace": trace}
-    trace.append(f"weather: snapshot at {snapshot.current_time} ({snapshot.place.timezone})")
-    return {"weather": snapshot, "trace": trace}
+        return {"branch": "fail", "error": str(exc), "failure": "weather", "trace": trace}
+
+    window = weather.resolve_window(snapshot, state["intent"].time_window, policy)
+    reason = None
+    if not window.times:
+        reason = (f"the forecast has no hours left for {window.label} - that period has "
+                  f"already passed or is beyond the forecast range")
+    elif all(window.values.get(name) is None for name in policy.fields):
+        reason = f"the weather service returned no usable values for {window.label}"
+    if reason:
+        trace.append(f"weather: FAILED ({reason})")
+        return {"branch": "fail", "error": reason, "failure": "weather", "trace": trace}
+    trace.append(f"weather: snapshot at {snapshot.current_time} ({snapshot.place.timezone}), "
+                 f"{len(window.times)} slot(s) for {window.label}")
+    return {"weather": snapshot, "window": window, "trace": trace}
 
 
 # --------------------------------------------------------------------------- #
@@ -92,8 +108,8 @@ def route_after_intake(state: GraphState) -> str:
     if intent.activity is None:
         # No vocabulary entry for this activity: there can be no SOP for it.
         return "no_match"
-    if not intent.location:
-        return "clarify"
+    if state.get("branch") == "clarify" or not intent.location:
+        return "clarify"  # an unsupported period, or no place anywhere in the session
     return "location"
 
 
@@ -162,17 +178,18 @@ def answer(
     memory = memory or MEMORY
     graph = graph or GRAPH
     session = memory.get(session_id)
-    state: GraphState = {
-        "session_id": session_id,
-        "user_message": message,
-        "history": list(session.history),
-        "established_facts": dict(session.facts),
-        "trace": [],
-    }
-    final = graph.invoke(state)
-    session.add_turn("user", message)
-    session.add_turn("assistant", final.get("reply", ""))
-    memory.record(session_id, final)
+    with session.lock:  # two requests on one session run one after the other, never interleaved
+        state: GraphState = {
+            "session_id": session_id,
+            "user_message": message,
+            "history": list(session.history),
+            "established_facts": dict(session.facts),
+            "trace": [],
+        }
+        final = graph.invoke(state)
+        session.add_turn("user", message)
+        session.add_turn("assistant", final.get("reply", ""))
+        memory.record(session, final)
 
     snapshot = final.get("weather")
     guard = final.get("guard_report") or {}
@@ -198,9 +215,11 @@ def facts_for_api(final: dict[str, Any]) -> dict[str, Any]:
     window = final.get("window")
     snapshot = final.get("weather")
     return {
+        "source": "Open-Meteo forecast API" if snapshot else None,
         "place": snapshot.place.label if snapshot else None,
         "timezone": snapshot.place.timezone if snapshot else None,
         "observed_at": snapshot.current_time if snapshot else None,
+        "fetched_at": snapshot.fetched_at if snapshot else None,
         "period": window.label if window else None,
         "hours_used": window.times if window else [],
         "values": {k: v for k, v in (window.values if window else {}).items() if v is not None},

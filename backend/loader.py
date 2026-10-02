@@ -77,7 +77,6 @@ class Policy:
     sops: dict[str, SOP]
     fields: dict[str, FieldSpec]
     derived: dict[str, dict[str, Any]]
-    daily: list[str]
     tags: dict[str, str]
     audiences: list[str]
     activities: dict[str, dict[str, Any]]
@@ -110,7 +109,7 @@ def _read_yaml(path: Path) -> Any:
 
 def _load_fields(
     path: Path,
-) -> tuple[dict[str, FieldSpec], dict[str, dict[str, Any]], list[str], dict[str, list[int]]]:
+) -> tuple[dict[str, FieldSpec], dict[str, dict[str, Any]], dict[str, list[int]]]:
     raw = _read_yaml(path)
     if not isinstance(raw, dict) or not isinstance(raw.get("fields"), dict):
         raise SOPConfigError(f"{path.name}: expected a top-level `fields` mapping")
@@ -170,27 +169,33 @@ def _load_fields(
             )
         cfg["codes"] = groups[group]
 
-    daily = raw.get("daily") or []
-    if not isinstance(daily, list):
-        raise SOPConfigError(f"{path.name}: `daily` must be a list")
-    return specs, derived, [str(d) for d in daily], groups
+    return specs, derived, groups
+
+
+def _hour(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 23
 
 
 def _load_vocab(
     path: Path,
-) -> tuple[dict[str, str], list[str], dict[str, Any], dict[str, TimeWindowSpec], dict[str, list[str]]]:
+) -> tuple[dict[str, str], list[str], list[str], dict[str, Any], dict[str, TimeWindowSpec],
+           dict[str, list[str]]]:
     raw = _read_yaml(path)
     if not isinstance(raw, dict):
         raise SOPConfigError(f"{path.name}: expected a top-level mapping")
 
     tags = raw.get("tags") or {}
     audiences = raw.get("audiences") or []
+    categories = raw.get("categories") or []
     activities = raw.get("activities") or {}
     windows_raw = raw.get("time_windows") or {}
     for key, value, kind in (("tags", tags, dict), ("activities", activities, dict),
-                             ("time_windows", windows_raw, dict), ("audiences", audiences, list)):
+                             ("time_windows", windows_raw, dict), ("audiences", audiences, list),
+                             ("categories", categories, list)):
         if not isinstance(value, kind):
             raise SOPConfigError(f"{path.name}: `{key}` must be a {kind.__name__}")
+    if not categories:
+        raise SOPConfigError(f"{path.name}: `categories` must list the SOP categories in use")
 
     for name, body in activities.items():
         if not isinstance(body, dict) or not body.get("aliases") or not body.get("tags"):
@@ -203,17 +208,23 @@ def _load_vocab(
     for name, body in windows_raw.items():
         if not isinstance(body, dict):
             raise SOPConfigError(f"{path.name}: time window `{name}` must be a mapping")
+        offset = body.get("day_offset", 0)
+        if not isinstance(offset, int) or isinstance(offset, bool) or not 0 <= offset <= 6:
+            raise SOPConfigError(f"{path.name}: time window `{name}` needs day_offset 0..6, got {offset!r}")
         spec = TimeWindowSpec(
             name=name,
             label=str(body.get("label", name.replace("_", " "))),
-            day_offset=int(body.get("day_offset", 0)),
+            day_offset=offset,
             use_current=bool(body.get("use_current", False)),
             start_hour=body.get("start_hour"),
             end_hour=body.get("end_hour"),
         )
-        if not spec.use_current and (spec.start_hour is None or spec.end_hour is None):
+        if not spec.use_current and not (
+            _hour(spec.start_hour) and _hour(spec.end_hour) and spec.start_hour <= spec.end_hour
+        ):
             raise SOPConfigError(
-                f"{path.name}: time window `{name}` needs start_hour and end_hour unless use_current is true"
+                f"{path.name}: time window `{name}` needs whole start_hour <= end_hour within 0..23 "
+                f"unless use_current is true, got {spec.start_hour!r}..{spec.end_hour!r}"
             )
         windows[name] = spec
     if "now" not in windows:
@@ -232,7 +243,7 @@ def _load_vocab(
         hints[str(name)] = [str(phrase).lower() for phrase in phrases]
 
     return ({str(k): str(v) for k, v in tags.items()}, [str(a) for a in audiences],
-            activities, windows, hints)
+            [str(c) for c in categories], activities, windows, hints)
 
 
 def _expand_groups(node: Any, groups: dict[str, list[int]], where: str) -> None:
@@ -262,6 +273,7 @@ def _load_sops(
     policy_fields: set[str],
     tags: set[str],
     audiences: set[str],
+    categories: set[str],
     groups: dict[str, list[int]],
 ) -> dict[str, SOP]:
     sops: dict[str, SOP] = {}
@@ -280,12 +292,17 @@ def _load_sops(
             _expand_groups(body.get("conditions"), groups, f"{where} (id={body.get('id', '?')})")
             _expand_groups(body.get("signals"), groups, f"{where} (id={body.get('id', '?')})")
             try:
-                sop = SOP(**body, source_file=path.name)
+                sop = SOP.model_validate({**body, "source_file": path.name})
             except ValidationError as exc:
                 raise SOPConfigError(f"{where} (id={body.get('id', '?')}): {exc}") from exc
             if sop.id in sops:
                 raise SOPConfigError(
                     f"{path.name}: duplicate SOP id {sop.id} (already defined in {sops[sop.id].source_file})"
+                )
+            if sop.category not in categories:
+                raise SOPConfigError(
+                    f"{path.name} ({sop.id}): unknown category {sop.category!r}; "
+                    f"declared in _vocab.yaml::categories: {sorted(categories)}"
                 )
             if sop.applies_to:
                 bad_tags = sorted(set(sop.applies_to.activity_tags_any or []) - tags)
@@ -308,10 +325,12 @@ def _load_sops(
 def load_policy(sop_dir: Path | str = SOP_DIR) -> Policy:
     """Load sops/ into a validated :class:`Policy`, or raise ``SOPConfigError``."""
     sop_dir = Path(sop_dir)
-    fields, derived, daily, groups = _load_fields(sop_dir / "_fields.yaml")
-    tags, audiences, activities, windows, audience_hints = _load_vocab(sop_dir / "_vocab.yaml")
+    fields, derived, groups = _load_fields(sop_dir / "_fields.yaml")
+    tags, audiences, categories, activities, windows, audience_hints = _load_vocab(
+        sop_dir / "_vocab.yaml"
+    )
     known = set(fields) | set(derived)
-    sops = _load_sops(sop_dir, known, set(tags), set(audiences), groups)
+    sops = _load_sops(sop_dir, known, set(tags), set(audiences), set(categories), groups)
 
     aliases: list[tuple[str, str]] = []
     for name, body in activities.items():
@@ -320,15 +339,23 @@ def load_policy(sop_dir: Path | str = SOP_DIR) -> Policy:
     aliases.sort(key=lambda pair: len(pair[0]), reverse=True)  # longest phrase wins
 
     return Policy(
-        sops=sops, fields=fields, derived=derived, daily=daily, tags=tags, audiences=audiences,
+        sops=sops, fields=fields, derived=derived, tags=tags, audiences=audiences,
         activities=activities, time_windows=windows, alias_to_activity=aliases,
         code_groups=groups, audience_hints=audience_hints,
     )
 
 
+def get_policy(sop_dir: Path | str | None = None) -> Policy:
+    """Process-wide cached policy. Call at startup so bad SOPs fail loudly.
+
+    `SOP_DIR` is read at call time, not bound at import, so pointing it at another
+    directory (the end-to-end 11th-SOP test does) switches every node at once.
+    """
+    return _cached_policy(str(Path(sop_dir or SOP_DIR).resolve()))
+
+
 @functools.lru_cache(maxsize=4)
-def get_policy(sop_dir: Path | str = SOP_DIR) -> Policy:
-    """Process-wide cached policy. Call at startup so bad SOPs fail loudly."""
+def _cached_policy(sop_dir: str) -> Policy:
     return load_policy(sop_dir)
 
 

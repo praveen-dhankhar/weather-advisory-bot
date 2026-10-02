@@ -78,6 +78,50 @@ OPERATORS: dict[str, Callable[[Any, Any], bool]] = {
 }
 
 COMBINATORS = ("all_of", "any_of", "not")
+NUMERIC_OPERATORS = ("gt", "gte", "lt", "lte")
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def check_rule(node: Any, path: str = "conditions") -> None:
+    """Validate the SHAPE of a condition tree at load time.
+
+    `evaluate` would raise on the same mistakes, but only when a request first reaches
+    the SOP - so a typo in YAML would surface as a crashed answer, not a failed startup.
+    Raises ValueError naming the offending node.
+    """
+    if not isinstance(node, dict) or not node:
+        raise ValueError(f"{path}: must be a non-empty mapping, got {node!r}")
+    if any(key in COMBINATORS for key in node):
+        if len(node) != 1:
+            raise ValueError(f"{path}: a combinator must be the only key, got {sorted(node)}")
+        key, payload = next(iter(node.items()))
+        if key == "not":
+            check_rule(payload, f"{path}.not")
+            return
+        if not isinstance(payload, list) or not payload:
+            raise ValueError(f"{path}.{key}: must be a non-empty list of conditions")
+        for index, child in enumerate(payload):
+            check_rule(child, f"{path}.{key}[{index}]")
+        return
+    for fname, test in node.items():
+        where = f"{path}.{fname}"
+        if not isinstance(test, dict) or len(test) != 1:
+            raise ValueError(f"{where}: needs exactly one operator, got {test!r}")
+        op_name, operand = next(iter(test.items()))
+        if op_name not in OPERATORS:
+            raise ValueError(f"{where}: unknown operator {op_name!r}; allowed: {sorted(OPERATORS)}")
+        if op_name in NUMERIC_OPERATORS and not _is_number(operand):
+            raise ValueError(f"{where}.{op_name}: needs a number, got {operand!r}")
+        if op_name == "between" and not (
+            isinstance(operand, list) and len(operand) == 2
+            and all(_is_number(v) for v in operand) and operand[0] <= operand[1]
+        ):
+            raise ValueError(f"{where}.between: needs [low, high] with low <= high, got {operand!r}")
+        if op_name in ("in", "not_in") and not (isinstance(operand, list) and operand):
+            raise ValueError(f"{where}.{op_name}: needs a non-empty list, got {operand!r}")
 
 
 # --------------------------------------------------------------------------- #
@@ -322,6 +366,16 @@ def demo() -> None:
     assert evaluate({"wind_speed_10m": {"between": [40, 50]}}, vals).ok
     assert evaluate({"not": {"wind_speed_10m": {"gte": 50}}}, vals).ok
     assert collect_fields({"all_of": [{"a": {"gt": 1}}, {"any_of": [{"b": {"lt": 2}}]}]}) == {"a", "b"}
+    # shape validation: every malformed node is rejected before any request sees it
+    check_rule({"all_of": [{"a": {"gt": 1}}, {"not": {"b": {"between": [1, 2]}}}]})
+    for bad in ({"a": {"gtt": 1}}, {"a": {"gt": "x"}}, {"a": {"gt": True}}, {"a": {"between": 5}},
+                {"a": {"between": [3, 1]}}, {"a": {"gt": 1, "lt": 2}}, {"all_of": {"a": {"gt": 1}}},
+                {"not": [{"a": {"gt": 1}}]}, {"a": {"in": []}}, {"all_of": [], "a": {"gt": 1}}):
+        try:
+            check_rule(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"check_rule accepted a malformed tree: {bad!r}")
 
     ctx = DerivedContext(
         current={"pressure_msl": 998.0, "wind_gusts_10m": 60.0, "wind_speed_10m": 25.0},

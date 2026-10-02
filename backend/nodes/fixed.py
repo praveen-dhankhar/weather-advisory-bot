@@ -20,7 +20,7 @@ FAILURE_TEXT = (
     "Please try again shortly, or check your local forecast directly."
 )
 
-# A failure BEFORE the forecast is attempted must not blame the forecast.
+# A failure BEFORE the forecast is attempted must not blame the forecast...
 FAILURE_TEXT_INTAKE = (
     "I could not understand that request well enough to act on it, so I am not "
     "going to answer rather than guess. No weather data was requested and no "
@@ -28,6 +28,15 @@ FAILURE_TEXT_INTAKE = (
     "Please rephrase it as an outdoor-activity question naming the place, for "
     'example "is it safe to cycle in Pune this evening?"'
 )
+
+# ...and an outage of the language model is not the user's wording either.
+FAILURE_TEXT_LLM = (
+    "I cannot answer right now: the language service I use to read questions is "
+    "unavailable. No weather data was requested and no standard operating procedure "
+    "was applied, so nothing in this message is advice. Please try again shortly."
+)
+
+FAILURE_TEXTS = {"weather": FAILURE_TEXT, "intake": FAILURE_TEXT_INTAKE, "llm": FAILURE_TEXT_LLM}
 
 NO_MATCH_TEXT = (
     NO_SOP_SENTENCE + " I only answer outdoor-activity safety questions that one of "
@@ -51,11 +60,17 @@ AMBIGUOUS_TEXT = (
     "operating procedure was applied to this message."
 )
 
+PERIOD_TEXT = (
+    "Which period should I check? I can only advise on {periods}, because those are "
+    "the hours the forecast covers, and I will not stretch it to a time it does not. "
+    "No standard operating procedure was applied to this message."
+)
+
 
 def failure_node(state: GraphState) -> dict[str, Any]:
     """Honest failure text. Which template is used depends on what actually failed."""
     reason = state.get("error") or "the weather service could not be reached."
-    template = FAILURE_TEXT_INTAKE if state.get("failed_before_fetch") else FAILURE_TEXT
+    template = FAILURE_TEXTS[state.get("failure") or "weather"]
     trace = list(state.get("trace") or []) + ["failure_node: fixed text, no LLM call"]
     return {
         "reply": template.format(reason=str(reason).rstrip(".") + "."),

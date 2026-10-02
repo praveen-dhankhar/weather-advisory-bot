@@ -7,9 +7,11 @@ that ever reaches the user originates in a :class:`WeatherSnapshot`.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal, Optional, TypedDict
+from typing import Annotated, Any, Literal, Optional, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
+
+from backend.conditions import check_rule
 
 
 # --------------------------------------------------------------------------- #
@@ -91,15 +93,15 @@ class SOPTimeWindow(BaseModel):
 class SOP(BaseModel):
     """One approved piece of guidance. Policy, authored as data."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     id: str = Field(pattern=r"^SOP-[A-Z0-9]+-\d+$")
-    category: str
+    category: str = Field(min_length=1)  # must also be listed in _vocab.yaml::categories
     severity: Severity
-    title: str
+    title: str = Field(min_length=1)
     kind: SOPKind
-    advice: str
-    cite_as: str
+    advice: str = Field(min_length=1)
+    cite_as: str = Field(min_length=1)
     applies_to: Optional[AppliesTo] = None
     time_window: Optional[SOPTimeWindow] = None
     conditions: Optional[dict[str, Any]] = None
@@ -108,8 +110,18 @@ class SOP(BaseModel):
     overrides: bool = False
     source_file: str = ""  # filled in by the loader, for error messages
 
+    @field_validator("conditions", "signals")
+    @classmethod
+    def _well_formed(cls, rule: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+        if rule is not None:
+            check_rule(rule)  # an unknown operator or a bad operand fails startup, not a request
+        return rule
+
     @model_validator(mode="after")
     def _kind_matches_payload(self) -> "SOP":
+        if self.id not in self.cite_as:
+            # the citation is what a user sees; one copied from another SOP points at the wrong rule
+            raise ValueError(f"cite_as must name this SOP's own id {self.id}, got {self.cite_as!r}")
         if self.kind == "numeric" and not self.conditions:
             raise ValueError("kind=numeric requires `conditions`")
         if self.kind == "fuzzy" and not self.fuzzy_criteria:
@@ -144,7 +156,7 @@ class Intent(BaseModel):
     activity: Optional[str] = None  # canonical key from sops/_vocab.yaml
     activity_tags: list[str] = Field(default_factory=list)
     audience: list[str] = Field(default_factory=lambda: ["general"])
-    time_window: str = "now"
+    time_window: Optional[str] = "now"  # None from the model = "this message names no time"
     is_followup: bool = False
 
 
@@ -178,7 +190,6 @@ class WeatherSnapshot(BaseModel):
     current: dict[str, Optional[float]] = Field(default_factory=dict)
     hourly_times: list[str] = Field(default_factory=list)
     hourly: dict[str, list[Optional[float]]] = Field(default_factory=dict)
-    daily: dict[str, list[Any]] = Field(default_factory=dict)
     derived: dict[str, Optional[float]] = Field(default_factory=dict)
     units: dict[str, str] = Field(default_factory=dict)
 
@@ -207,10 +218,54 @@ class MatchedSOP(BaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
     via: Literal["numeric", "fuzzy", "situational"] = "numeric"
 
-    @property
-    def sort_key(self) -> tuple[int, int, int]:
-        """Severity first, then specificity (conditions, then tags)."""
-        return (self.severity.rank, self.matched_conditions, self.matched_tags)
+
+# --------------------------------------------------------------------------- #
+# Open-Meteo wire format. Validated before anything reads it: strict numbers (a
+# string or a bool is not a reading), ISO hour stamps, one value per timestamp.
+# --------------------------------------------------------------------------- #
+Timestamp = Annotated[str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$")]
+Reading = Optional[float]
+
+
+class GeocodeResult(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    name: str = Field(min_length=1)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    country: Optional[str] = None
+    country_code: Optional[str] = None
+    admin1: Optional[str] = None
+    admin2: Optional[str] = None
+    timezone: Optional[str] = None
+    population: Optional[float] = None
+
+
+class GeocodeResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    results: list[GeocodeResult] = Field(default_factory=list)
+
+
+class ForecastPayload(BaseModel):
+    """`current` and `hourly` with their `time` keys split out, so each part is typed."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    timezone: Optional[str] = None
+    current_time: Timestamp
+    current: dict[str, Reading]
+    hourly_time: list[Timestamp] = Field(min_length=1)
+    hourly: dict[str, list[Reading]]
+    units: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _one_value_per_hour(self) -> "ForecastPayload":
+        expected = len(self.hourly_time)
+        ragged = sorted(name for name, series in self.hourly.items() if len(series) != expected)
+        if ragged:
+            raise ValueError(f"hourly series {ragged} do not have one value per timestamp ({expected})")
+        return self
 
 
 # --------------------------------------------------------------------------- #
@@ -232,10 +287,11 @@ class GraphState(TypedDict, total=False):
     matched: list[MatchedSOP]
     matched_sop_ids: list[str]
     situational_ids: list[str]
-    error: Optional[str]
+    error: Optional[str]  # user-safe reason, shown in the failure reply
+    failure: Literal["llm", "intake", "weather"]  # which fixed failure text applies
     clarify_question: Optional[str]
-    failed_before_fetch: bool
     branch: Branch
+    draft: str  # the composer's text, before the guard checks it and code renders it
     reply: str
     guard_report: dict[str, Any]
     trace: list[str]
