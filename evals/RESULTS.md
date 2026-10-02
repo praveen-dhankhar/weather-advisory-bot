@@ -1,7 +1,7 @@
 # Eval results
 
 **Run date:** 2026-10-02 · **Command:** `pytest -o addopts= --run-live -q -rs`
-**Result: 59 passed, 1 skipped, 0 failed.** The one skip is explained below and is not
+**Result: 60 passed, 1 skipped, 0 failed.** The one skip is explained below and is not
 silent.
 
 Model under test: **NVIDIA NIM `nvidia/nemotron-3-super-120b-a12b`** (OpenAI-compatible
@@ -10,9 +10,9 @@ endpoint, free tier). Policy: **29 SOPs** across 4 categories.
 Two modes:
 
 - **Mode A** (`pytest`) - recorded Open-Meteo fixtures + the deterministic stand-in
-  LLM. 60 collected, 57 passed, 3 skipped (the `live`-marked tests). ~1.5 s, no network.
+  LLM. 61 collected, 58 passed, 3 skipped (the `live`-marked tests). ~1.5 s, no network.
 - **Mode B** (`pytest --run-live`) - adds live Open-Meteo **and** the real model.
-  60 collected, 59 passed, 1 skipped, ~67 s.
+  61 collected, 60 passed, 1 skipped, ~69 s.
 
 This file was rewritten after an adversarial audit of the first version. The audit
 found nine defect groups; all are fixed, and each one left a test behind. The audit
@@ -72,6 +72,7 @@ findings and what changed are in §"What the audit found".
 | **A23** | At most three SOPs surfaced | `test_at_most_three_sops_are_surfaced` | A | **pass** |
 | **A24** | Every turn is logged with its decision | `test_every_turn_is_logged_with_its_decision` | A | **pass** |
 | **A25** | Pressure trend needs `past_hours` from the API | `test_pressure_trend_needs_past_hours_from_the_api` | A | **pass** |
+| **A26** | No SOP id or advice text from an earlier reply reaches the intake prompt | `test_intake_prompt_carries_no_policy_text_from_earlier_turns` | A | **pass** |
 
 Bold rows are the regression tests added for audit findings.
 

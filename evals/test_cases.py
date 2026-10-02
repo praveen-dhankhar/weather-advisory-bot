@@ -1070,3 +1070,24 @@ def test_pressure_trend_needs_past_hours_from_the_api(policy, monkeypatch):
     assert captured.get("past_hours"), f"past_hours missing from the query: {sorted(captured)}"
     assert int(captured["past_hours"]) >= 3, "at least 3 past hours are needed for the 3h trend"
     assert snapshot.derived["pressure_change_3h"] is not None
+
+
+def test_intake_prompt_carries_no_policy_text_from_earlier_turns(policy):
+    """CHECKS that the intake prompt cannot see SOP ids or advice text from a previous
+    reply - follow-up handling needs the user's own wording, not the policy it already
+    quoted, so no SOP text is in a position to influence intent extraction at all.
+    PASS = the assistant turn is absent, no SOP id appears, and no sentence of SOP
+    advice appears, while the earlier user question is still there for the follow-up."""
+    sop = policy.sops["SOP-EX-01"]
+    earlier_reply = f"{sop.advice} [{sop.id}] Readings used: wind speed 48 km/h."
+    history = [
+        {"role": "user", "content": "is it safe to cycle in Pune?"},
+        {"role": "assistant", "content": earlier_reply},
+    ]
+    _, user = intake.build_prompt("what about this evening?", {"location": "Pune"}, history, policy)
+
+    assert sop_ids_in(user) == set(), "a previous reply's SOP ids reached the intake prompt"
+    first_sentence = sop.advice.split(".")[0].strip()
+    assert first_sentence not in user, "SOP advice text reached the intake prompt"
+    assert "Readings used" not in user
+    assert "is it safe to cycle in Pune?" in user, "the user's own earlier turn was dropped"

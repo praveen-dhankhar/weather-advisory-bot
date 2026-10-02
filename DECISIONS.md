@@ -262,5 +262,10 @@ threshold combination in `sops/situational.yaml`.
 - **`matched_sop_ids` holds what was surfaced** (primary + up to two secondaries),
   not everything that matched; the full match list stays in the graph state and in
   `trace`, so nothing is lost for debugging.
+- **The intake prompt sees the user's own past turns and nothing else.** A previous
+  reply quotes SOP advice and ids, and intent extraction has no use for either, so
+  `build_prompt` filters the history to `role == "user"`. Prior policy text is
+  therefore not in a position to influence matching, rather than merely being ignored
+  once it arrives (`test_intake_prompt_carries_no_policy_text_from_earlier_turns`).
 - **`trace` is returned by the API.** Not a product feature - it is how a reviewer
   checks that the claims above are true without reading the code.

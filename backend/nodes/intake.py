@@ -72,7 +72,11 @@ def build_prompt(
         for k in ("location", "activity", "audience", "time_window")
         if facts.get(k) is not None
     }
-    recent = "\n".join(f"{turn['role']}: {turn['content']}" for turn in history[-4:]) or "(none)"
+    # Only the user's own turns. A past reply quotes SOP advice and ids, and intent
+    # extraction never needs them - keeping them out means no policy text can reach
+    # this prompt, rather than merely being unused once it arrives.
+    asked = [turn["content"] for turn in history if turn.get("role") == "user"]
+    recent = "\n".join(f"user: {text}" for text in asked[-3:]) or "(none)"
     user = (
         f"{_vocab_block(policy)}\n\n"
         f"ESTABLISHED FACTS FROM THIS SESSION (use for follow-ups): "

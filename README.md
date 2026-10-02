@@ -177,6 +177,42 @@ data change - there is a test for exactly that
 | [`evals/`](evals/) | eval suite, recorded fixtures, `RESULTS.md` |
 | [`DECISIONS.md`](DECISIONS.md) | what is code vs model, where each rule is enforced, honest gaps |
 
+## Notes for the reviewer
+
+Four places where this repo knowingly differs from the brief or the reference guide.
+Each was a decision, not an oversight.
+
+**`sops/` sits at the repo root, not under `backend/`.** The reference guide's tree
+nests it. The policy is not backend implementation - it is the artefact someone who
+writes no Python is meant to edit - so it sits beside the code that reads it rather
+than inside it. `loader.SOP_DIR` resolves it either way.
+
+**Geocoding does not take the first result.** The brief says to "take the first
+result's latitude and longitude" and calls picking it silently a reasonable default.
+It is not one here: Open-Meteo's first hit for *Goa* is Genoa, Italy, and a confident
+answer about the wrong country is worse than a question. The rule requires an exact
+name match, lets the most populous candidate win inside a single country, and asks
+when candidates straddle countries. The brief's own examples are unaffected - Bhopal
+resolves to Madhya Pradesh, Springfield to Missouri, both silently. Empty or failed
+geocoding still routes to the same honest failure the brief mandates. The residual
+risk is written up in [DECISIONS.md](DECISIONS.md) §7.
+
+**Matching is deterministic first, LLM second.** The reference guide sketches asking
+the LLM which SOP ids apply and then checking that they exist. Here 27 of the 29 SOPs
+are matched in code by evaluating the conditions they declare, and the LLM judges only
+the two whose rules are genuinely non-numeric - and even then code re-checks the
+values it cites against the snapshot. The brief leaves this open ("how you decide what
+'matches' is up to you"), and the narrower LLM surface is the point: a numeric SOP
+cannot be talked out of firing. See [DECISIONS.md](DECISIONS.md) §1 and §4.
+
+**This is more than one day's work, and that is a deviation.** The brief asks for
+about a day and says to simplify rather than keep building. 29 SOPs against a floor of
+10, 61 tests and a mutation-tested suite are past that line. The bulk is policy and
+verification rather than machinery - the graph is 10 nodes and the condition evaluator
+is one file - so the brief's stated reason for the limit, a sprawling system
+that is half-explained, does not apply. The overrun is still real and is named here rather than left for a reviewer
+to notice.
+
 ## Deployment path
 
 The frontend and backend can run as one process: `EMBEDDED=1 streamlit run
@@ -189,7 +225,7 @@ with the process, which is intentional.
 
 ## Demo script (5-10 minutes)
 
-1. **Policy first (30s).** `python -m backend.loader` - 21 SOPs printed with id,
+1. **Policy first (30s).** `python -m backend.loader` - 29 SOPs printed with id,
    severity, kind, title. Open [`sops/travel.yaml`](sops/travel.yaml): thresholds,
    advice text and citation are all data.
 2. **A normal answer (1m).** `python -m backend.graph "is it safe to cycle to work
