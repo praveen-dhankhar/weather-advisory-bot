@@ -7,7 +7,7 @@ in 4 categories.
 | mode | command | result |
 | --- | --- | --- |
 | A | `pytest` | **154 passed, 8 skipped** in ~6 s. The 8 skips are exactly the tests marked `live`. |
-| B | `pytest -o addopts= -q -rs --run-live --eval-report=evals/REPORT.md` | **159 passed, 1 skipped** in 363 s (6 min). The skip is the live storm scan - no storm on the run date, explained below. |
+| B | `pytest -o addopts= -q -rs --run-live --eval-report=evals/REPORT.md` | **161 passed, 1 skipped** in 476 s (8 min). The skip is the live storm scan - no storm on the run date, explained below. |
 
 Mode A uses recorded Open-Meteo fixtures and the deterministic stand-in LLM, so it is
 identical on every run. Mode B adds live Open-Meteo calls and the real model.
@@ -42,9 +42,9 @@ and after. The file was then removed.
 
 ```
 SKIPPED evals/test_cases.py:166: no situational SOP fired on live data today. Scanned ->
-Bhopal: 24h=0.0mm p=1016.4hPa, Mumbai: 24h=0.0mm p=1015.1hPa, Chennai: 24h=1.3mm
-p=1015.4hPa, Kolkata: 24h=0.9mm p=1014.0hPa, Guwahati: 24h=0.0mm p=1013.4hPa,
-Thiruvananthapuram: 24h=3.6mm p=1015.4hPa
+Bhopal: 24h=0.0mm p=1016.3hPa, Mumbai: 24h=0.0mm p=1015.0hPa, Chennai: 24h=1.3mm
+p=1015.3hPa, Kolkata: 24h=0.9mm p=1013.9hPa, Guwahati: 24h=0.0mm p=1013.4hPa,
+Thiruvananthapuram: 24h=3.6mm p=1015.3hPa
 ```
 
 SOP-SIT-01 needs at least 50 mm over 24 hours; the wettest
