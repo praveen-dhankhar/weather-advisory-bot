@@ -79,9 +79,12 @@ python -m backend.graph "cycling in Bhopal today?" "what about this evening inst
 ```
 
 `POST /chat` takes `{session_id, message}` and returns
-`{reply, sop_ids, branch, facts, trace}`. `facts` carries the place, the exact
-hourly slots used and every value the answer was built from; `trace` is the
-per-node decision log.
+`{reply, sop_ids, branch, facts, trace}`. `facts` carries the place, the exact hourly
+slots used and every value the answer was built from; `trace` is the per-node decision
+log. A message may be up to **8000 characters**; longer is rejected with 422, and
+anything past ~2000 characters is truncated head-and-tail before it reaches a prompt
+(the question is normally at one end). Every turn is also written to the `advisory`
+logger with its branch, cited SOPs, place, snapshot time and guard verdict.
 
 ## Tests
 
@@ -135,6 +138,20 @@ Four endings that are genuinely different: a composed answer, an override-led
 answer, a fixed no-guidance answer, and a fixed failure answer. Only the first two
 involve a language model.
 
+## SOP authoring rules
+
+Two constraints the schema enforces, so they are worth knowing before you add one:
+
+- **ids match `SOP-<LETTERS>-<DIGITS>`** (`SOP-EX-12`, `SOP-VG-07`). A trailing letter
+  such as `SOP-NEW-A1` is rejected by name at startup.
+- **one `sops:` key per file.** A second block is rejected rather than silently
+  discarding the first - plain YAML keeps only the last of two identical keys.
+
+A new SOP that uses an already-fetched field needs nothing but the YAML block. A new
+weather variable needs a block in `_fields.yaml`. A new WMO code set goes in
+`_fields.yaml::code_groups` and is referenced by name with `in_group` / `not_in_group`,
+so a group is never written out twice.
+
 ## Why the SOPs are YAML
 
 A non-engineer can author and edit them; a Pydantic schema validates every field at
@@ -148,7 +165,7 @@ data change - there is a test for exactly that
 
 | path | what it is |
 | --- | --- |
-| [`sops/`](sops/) | **the policy.** 21 SOPs, the tag/activity/time vocabulary (`_vocab.yaml`), the Open-Meteo field map (`_fields.yaml`) |
+| [`sops/`](sops/) | **the policy.** 29 SOPs, the tag/activity/audience/time vocabulary (`_vocab.yaml`), the Open-Meteo field map and WMO code groups (`_fields.yaml`) |
 | [`backend/models.py`](backend/models.py) | Pydantic schemas (`SOP`, `Intent`, `WeatherSnapshot`, `GraphState`) and typed errors |
 | [`backend/loader.py`](backend/loader.py) | loads + validates `sops/`, fails loudly naming the file |
 | [`backend/weather.py`](backend/weather.py) | Open-Meteo client, timeouts, derived signals, time-window resolution |

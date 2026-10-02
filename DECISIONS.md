@@ -9,7 +9,8 @@
 | Deriving the situational signals | code ([`conditions.py::DERIVED_BUILDERS`](backend/conditions.py)) | arithmetic over a payload; no judgement needed |
 | Validating SOP ids | code ([`loader.py`](backend/loader.py), [`matcher.py`](backend/nodes/matcher.py), [`guards.py`](backend/guards.py)) | the id set is the trust boundary; the model never widens it |
 | Failure text, no-match text, clarifying question | code ([`nodes/fixed.py`](backend/nodes/fixed.py)) | a model asked to phrase an apology will eventually phrase advice with it |
-| Tags, audience, activity and time window actually used | code ([`intake.py::normalise`](backend/nodes/intake.py)) | these drive routing, so they are re-derived from `_vocab.yaml` even though the model proposes them |
+| Tags, activity and time window actually used | code ([`intake.py::normalise`](backend/nodes/intake.py)) | these drive routing, so they are re-derived from `_vocab.yaml` even though the model proposes them |
+| **Audience** (who the advice is for) | code ([`intake.py::detect_audience`](backend/nodes/intake.py)) | audience decides which SOPs may apply at all - a child's heat threshold is 2 C below an adult's - and the model demonstrably got it wrong on follow-ups, so the phrases live in `_vocab.yaml::audience_hints` and code has the final say |
 | Ranking matched SOPs | code ([`matcher.py::rank`](backend/nodes/matcher.py)) | "which risk leads" is policy |
 | Extracting intent from free text | **model** | this is genuinely language work: paraphrase, ellipsis, follow-ups |
 | Judging a plain-language rubric (fuzzy SOPs) | **model**, then code verifies | "is this pleasant for a walk" has no single threshold; but the values it used are re-checked |
@@ -39,9 +40,22 @@ gave it. It may not originate a number, an id, a threshold or a recommendation.
 ```
 1. situational SOPs with overrides: true  -> always first
 2. then severity rank (critical > high > moderate > low > info)
-3. then specificity: more matched leaf conditions, then more matched tags
-4. then id, for a stable order
+3. then audience specificity: guidance written for THIS person beats generic
+4. then condition specificity: more matched leaf conditions, then more matched tags
+5. then id, for a stable order
 ```
+
+Rule 3 was added after testing: at equal severity a generic comfort SOP was leading
+over guidance written for an older adult. Between two rules of the same severity, the
+one written about the person actually going outside is the better answer.
+
+**Plus a refusal rule** ([`matcher.py::run`](backend/nodes/matcher.py)): when the
+audience is not the general population and *nothing written for them* matched, any
+`low`/`info` generic matches are dropped and the bot says no SOP applies. Reassuring
+someone about a child or a dog on evidence that was never about them is the kind of
+confident-sounding wrong answer this system exists to avoid. A `moderate`-or-worse SOP
+is always surfaced whoever it was written for, so a thunderstorm warning still reaches
+a child even though SOP-EX-04 names no audience. Both directions are tested.
 
 Implemented in [`matcher.py::rank`](backend/nodes/matcher.py). The top SOP is the
 primary advice; up to **two** more are surfaced as short secondary notes
@@ -166,7 +180,21 @@ it is a reading of forecast data rather than an authority's warning.
   Honest consequence: the situational override is a statement about the current
   system, not about an arbitrary future window.
 - **Severity is authored, not computed.** Two SOP authors could disagree; nothing in
-  the system detects an inconsistent severity ladder across files.
+  the system detects an inconsistent severity ladder across files - though the eval
+  suite now asserts that severity never *falls* as it gets hotter, for all four
+  audiences.
+- **Geocoding asks more often than it used to.** A place name is only accepted when it
+  matches a result exactly (accents and case ignored); same-named places in different
+  countries are accepted only when the top one is populous and dominant. That stops
+  "Goa" resolving to Genoa, Italy and "bhopl" to a village in Bangladesh, but it also
+  means genuinely small or absent places - "Sohra", "Lonavala" - get a question or an
+  honest failure instead of an answer. Within a single country the most populous match
+  still wins silently, so "Manali" resolves to the larger Manali in Tamil Nadu rather
+  than the Himachal hill town.
+- **The audience hint list is finite.** `_vocab.yaml::audience_hints` covers the common
+  ways people name a child, an older adult or an animal. A phrasing outside it falls
+  back to the model's guess, then to the session's audience. Adding a phrase is a data
+  change; the fallback order is code.
 - **Session memory is a process dict.** Restart and the conversation is gone. No
   eviction beyond the last 8 turns, no cross-process sharing, no auth - so this is
   single-instance only.
