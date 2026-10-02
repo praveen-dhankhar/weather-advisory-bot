@@ -170,11 +170,33 @@ it is a reading of forecast data rather than an authority's warning.
 - **Session memory is a process dict.** Restart and the conversation is gone. No
   eviction beyond the last 8 turns, no cross-process sharing, no auth - so this is
   single-instance only.
-- **No real-LLM verification in this run.** The `OPENAI_API_KEY` available in the
-  build environment is rejected with HTTP 401, so every result in
-  [`evals/RESULTS.md`](evals/RESULTS.md) comes from the deterministic stand-in. The
-  live-LLM test exists, skips with the provider's own error text, and has not been
-  observed passing. See RESULTS.md for what that does and does not prove.
+- **Provider swap is one env var, but model quality is not.** `openai`, `nvidia`
+  (NIM, OpenAI-compatible via `base_url`) and `anthropic` all go through
+  `llm.py::chat`. The prompts are not tuned per model: a smaller open-weight model
+  on NIM will return malformed JSON from the intake node more often than a frontier
+  model. That is handled, not hidden - `chat_json` raises `LLMError`, intake routes
+  to the failure branch, and the guard catches a sloppy composer - but it shows up
+  as more failure-branch replies rather than as bad advice.
+- **Real-model verification is thin, not absent.** The suite now runs end to end
+  against NVIDIA NIM (`nvidia/nemotron-3-super-120b-a12b`) and
+  `test_live_llm_end_to_end` passes, but that is one model and a handful of calls. The
+  other 24 cases deliberately use the deterministic stand-in so they are fast and
+  repeatable. Fuzzy-judgement quality across models and repeated samples is unmeasured.
+- **The guard has been observed catching a real model, not just a fake.** On the first
+  live call the model converted `visibility 22080.0 m` to `22.0 km`; check (b) rejected
+  it and the stricter retry fixed it (transcript in
+  [`evals/RESULTS.md`](evals/RESULTS.md)). Good news for the design, and a reminder
+  that unit conversion is the failure mode to watch - the guard tolerates rounding,
+  not conversion, so a reply that converts units always costs a retry.
+- **Free-tier latency is the user-facing weak point.** A turn is 2 LLM calls (3 when
+  the guard retries). On NIM's free tier that measured 35-178 s depending on the
+  model. Nothing in the architecture needs that long; it is queue time. The honest
+  mitigation is a paid endpoint, not a prompt change.
+- **Provider model availability is not uniform.** The NIM key used here can reach 10
+  of the 81 models its `/v1/models` endpoint advertises; the rest answer `404 Not
+  found for account`. `meta/llama-3.3-70b-instruct` is retired outright (`410 Gone`).
+  So "set `LLM_MODEL` to anything the list shows" is not safe advice - verify with
+  `python -m backend.llm`, which makes one real call and prints what it resolved.
 
 ## 8. A severe-weather test that still works after the storm passes
 

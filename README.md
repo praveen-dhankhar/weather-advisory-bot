@@ -25,13 +25,33 @@ pip install -r requirements.txt
 cp .env.example .env            # then put a key in it
 ```
 
-`.env` picks the provider:
+`.env` picks the provider. Three real ones are wired, all through the single
+wrapper in [`backend/llm.py`](backend/llm.py):
 
 ```ini
-LLM_PROVIDER=openai       # openai | anthropic | fake
-LLM_MODEL=gpt-4o-mini     # or claude-sonnet-5 for anthropic
-OPENAI_API_KEY=sk-...
+# NVIDIA NIM - OpenAI-compatible, free tier
+LLM_PROVIDER=nvidia
+LLM_MODEL=nvidia/nemotron-3-super-120b-a12b
+NVIDIA_API_KEY=nvapi-...
+LLM_TIMEOUT=120          # free-tier endpoints queue; a turn can take ~35 s
+
+# or OpenAI
+# LLM_PROVIDER=openai
+# LLM_MODEL=gpt-4o-mini
+# OPENAI_API_KEY=sk-...
+
+# or Anthropic
+# LLM_PROVIDER=anthropic
+# LLM_MODEL=claude-sonnet-5
+# ANTHROPIC_API_KEY=sk-ant-...
 ```
+
+Anything else that speaks the OpenAI chat-completions API (Groq, Together,
+OpenRouter, a local vLLM) works by setting `LLM_PROVIDER=openai` plus
+`LLM_BASE_URL` and `OPENAI_API_KEY`. Verify the wiring with
+`python -m backend.llm`, which prints the resolved provider/model/base URL and makes
+one real call - worth doing, because a NIM key reaches only a subset of the models
+its `/v1/models` endpoint lists and retired models answer `410 Gone`.
 
 `LLM_PROVIDER=fake` runs the deterministic stand-in in
 [`backend/fake_llm.py`](backend/fake_llm.py): keyword intake, the fuzzy rubrics

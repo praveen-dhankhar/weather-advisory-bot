@@ -1,15 +1,20 @@
 # Eval results
 
-**Run date:** 2026-10-02 · **Command:** `pytest -o addopts= --run-live -v -rs`
-**Result: 24 passed, 2 skipped, 0 failed.** Both skips are explained below and
-neither is silent.
+**Run date:** 2026-10-02 · **Command:** `pytest -o addopts= --run-live -q -rs`
+**Result: 25 passed, 1 skipped, 0 failed.** The one skip is explained below and is
+not silent.
+
+Model under test: **NVIDIA NIM `nvidia/nemotron-3-super-120b-a12b`** (OpenAI-compatible
+endpoint, free tier). An earlier run of this suite had no working key at all and is
+kept in §"Earlier run" below, because the comparison is the interesting part.
 
 Two modes:
 
 - **Mode A** (`pytest`) - recorded Open-Meteo fixtures + the deterministic stand-in
-  LLM. 24 collected, 23 passed, 3 skipped (the `live`-marked tests). Repeatable.
-- **Mode B** (`pytest --run-live`) - adds the live Open-Meteo tests. 26 collected,
-  24 passed, 2 skipped.
+  LLM. 26 collected, 23 passed, 3 skipped (the `live`-marked tests). Repeatable, no
+  network beyond nothing at all, ~0.8 s.
+- **Mode B** (`pytest --run-live`) - adds live Open-Meteo **and** the real model.
+  26 collected, 25 passed, 1 skipped, ~73 s.
 
 ## Results table
 
@@ -156,7 +161,10 @@ test the defence rather than the model's good manners.
 
 ## Known weaknesses in this suite
 
-- All language behaviour is tested against the stand-in. See 8b.
+- Real-model coverage is one model and a handful of calls
+  (`test_live_llm_end_to_end`). Everything else runs against the stand-in, by design -
+  a suite that needs 73 s and a quota to tell you a regression exists is a suite
+  nobody runs on every edit.
 - The stand-in's fuzzy thresholds restate the YAML rubrics by hand, so a rubric
   edit will not be caught by Mode A until the stand-in is updated too. Noted in
   DECISIONS.md §6.
