@@ -60,6 +60,20 @@ AMBIGUOUS_TEXT = (
     "operating procedure was applied to this message."
 )
 
+# Turn caps on a public deployment (backend/memory.py::Memory.admit). Checked before
+# the graph runs, so these turns cost no model call and no weather call.
+SESSION_LIMIT_TEXT = (
+    "This conversation has reached its question limit, so I am not answering this one. "
+    "No weather data was requested and no standard operating procedure was applied. "
+    "Start a new session to keep going."
+)
+
+BUSY_TEXT = (
+    "The bot has reached its question limit for this hour, so I am not answering right "
+    "now. No weather data was requested and no standard operating procedure was "
+    "applied. Please try again later."
+)
+
 PERIOD_TEXT = (
     "Which period should I check? I can only advise on {periods}, because those are "
     "the hours the forecast covers, and I will not stretch it to a time it does not. "

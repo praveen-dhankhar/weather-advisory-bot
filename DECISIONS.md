@@ -231,7 +231,9 @@ it is a reading of forecast data rather than an authority's warning.
 - **Session memory is a process dict.** Restart and the conversation is gone. The last
   8 turns per session, at most 500 sessions (least recently used evicted), a lock per
   session so two requests on one id run one after the other, no cross-process sharing,
-  no auth - so this is single-instance only.
+  no auth - so this is single-instance only. The turn caps that protect the public
+  deployment (`MAX_TURNS_PER_SESSION`, `MAX_TURNS_PER_HOUR`) live there too, so they are
+  per process as well.
 - **Provider swap is one env var, but model quality is not.** `openai`, `nvidia`
   (NIM, OpenAI-compatible via `base_url`) and `anthropic` all go through
   `llm.py::chat`. The prompts are not tuned per model: a smaller open-weight model

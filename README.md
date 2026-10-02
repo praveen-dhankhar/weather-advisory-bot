@@ -106,7 +106,8 @@ it is truncated head-and-tail before it reaches the intake prompt. The response 
 `facts` (place, hourly slots used, every value the answer was built from) and `trace`
 (the per-node decision log). Every turn is also logged by the `advisory` logger at INFO
 with its branch, cited SOPs, place, snapshot time and guard verdict - visible in the
-uvicorn console.
+uvicorn console. With `MAX_TURNS_PER_SESSION` / `MAX_TURNS_PER_HOUR` set, a turn over a
+cap is refused before any model or weather call, with HTTP 429 and fixed text.
 
 The frontend shows a spinner while a turn runs, keeps one `session_id` per browser
 session ("New session" resets it), shows HTTP and connection errors as such, and waits
@@ -277,6 +278,7 @@ id by a lock, evicted least-recently-used beyond 500, and gone on restart.
 | [`backend/graph.py`](backend/graph.py) | LangGraph wiring, conditional edges, per-turn logging, CLI |
 | [`backend/memory.py`](backend/memory.py) | per-session history + established facts, in process only |
 | [`backend/main.py`](backend/main.py) | FastAPI `POST /chat`, `GET /health` |
+| [`.streamlit/config.toml`](.streamlit/config.toml), [`.github/workflows/tests.yml`](.github/workflows/tests.yml) | public-deploy setting (no tracebacks for viewers), CI running the offline suite |
 | [`frontend/app.py`](frontend/app.py) | Streamlit chat UI |
 | [`evals/`](evals/) | eval suite, recorded fixtures, `RESULTS.md`, generated `REPORT.md` |
 | [`DECISIONS.md`](DECISIONS.md) | what is code vs model, where each rule is enforced, honest gaps |
@@ -315,15 +317,58 @@ give on its own (the first version's guard let invented figures through - see
 passes are past the brief's budget. The bulk is policy and verification rather than
 machinery - 10 nodes, one evaluator file - but the overrun is real and named here.
 
-## Deployment path
+## Deploying to Streamlit Community Cloud
 
-`EMBEDDED=1 streamlit run frontend/app.py` runs frontend and graph in one process, so
-**Streamlit Community Cloud** with the provider key as a secret is a single-URL deploy.
-For a split deploy, run `uvicorn backend.main:app --host 0.0.0.0 --port $PORT` on Render
-or a Hugging Face Space and point `BACKEND_URL` at it. There is no database: session
-memory is an in-process dict, so run one worker. No CORS middleware is installed
-because the Streamlit frontend calls the API server-side; a browser frontend on another
-origin would need one. FastAPI's `/docs` is left on for reviewers.
+The public deployment is one process: Streamlit runs the graph itself (`EMBEDDED=1`),
+so a slow model turn never meets an HTTP proxy timeout and there is no second service.
+
+1. Push the repo to GitHub (public repo, public app).
+2. On [share.streamlit.io](https://share.streamlit.io): **Create app**, pick the repo,
+   branch `main`, main file `frontend/app.py`, and a custom subdomain.
+3. **Advanced settings**: Python **3.12** (changing it later means deleting and
+   redeploying), and paste these secrets:
+
+   ```toml
+   EMBEDDED = "1"
+   LLM_PROVIDER = "nvidia"
+   LLM_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+   NVIDIA_API_KEY = "nvapi-..."        # a key used only by this deployment
+   LLM_TIMEOUT = "120"
+   MAX_TURNS_PER_SESSION = "30"
+   MAX_TURNS_PER_HOUR = "120"
+   ```
+
+   Keep every value a quoted string. Streamlit copies root-level string and number
+   secrets into the environment the backend reads (`os.getenv`), and skips booleans.
+4. Deploy. The sidebar must say **Mode: embedded graph**; "Manage app" logs show one
+   `INFO advisory: session=... branch=...` line per turn.
+
+To rehearse locally, put the same text in `.streamlit/secrets.toml` (gitignored) and
+run `streamlit run frontend/app.py` with no env vars set. That is the same bootstrap
+path Cloud uses.
+
+**Running it in public.**
+- *Turn caps.* `MAX_TURNS_PER_HOUR` is the real guard on the model key and on
+  Open-Meteo's free non-commercial tier: 120 turns an hour is at most ~5,800 calls a day,
+  under its 10,000. `MAX_TURNS_PER_SESSION` bounds a single conversation. A refused turn
+  gets fixed text before any model or weather call; the API answers it with HTTP 429.
+- *Error details.* Tracebacks are hidden from viewers (`.streamlit/config.toml`) and
+  stay in the logs.
+- *Sleep.* An app with no traffic for 12 hours sleeps; anyone opening the link can wake
+  it. Open it before a review.
+- *Operating through secrets.* Editing secrets (then rebooting) switches the provider -
+  `LLM_PROVIDER = "fake"` is the no-key fallback - or shows the failure branch with
+  `SIMULATE_WEATHER_DOWN = "1"`.
+- *Rollback and keys.* Revert on `main` (Cloud redeploys) to roll back. Revoke the
+  deploy key when the review is over.
+- *CI.* [`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs the offline
+  suite on every push; Cloud redeploys `main` regardless, so that check is the gate to
+  watch.
+
+Elsewhere: run `uvicorn backend.main:app --host 0.0.0.0 --port $PORT` and point the
+frontend's `BACKEND_URL` at it. Session memory and the caps live in the process, so run
+one worker. No CORS middleware is installed, because the Streamlit frontend calls the
+API server-side. FastAPI's `/docs` is left on for reviewers.
 
 ## Demo script (5-10 minutes)
 

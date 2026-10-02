@@ -6,8 +6,8 @@ in 4 categories.
 
 | mode | command | result |
 | --- | --- | --- |
-| A | `pytest` | **148 passed, 8 skipped** in ~5 s. The 8 skips are exactly the tests marked `live`. |
-| B | `pytest -o addopts= -q -rs --run-live --eval-report=evals/REPORT.md` | **155 passed, 1 skipped** in 225 s (about 4 min). The skip is the live storm scan - no storm on the run date, explained below. |
+| A | `pytest` | **152 passed, 8 skipped** in ~6 s. The 8 skips are exactly the tests marked `live`. |
+| B | `pytest -o addopts= -q -rs --run-live --eval-report=evals/REPORT.md` | **159 passed, 1 skipped** in 363 s (6 min). The skip is the live storm scan - no storm on the run date, explained below. |
 
 Mode A uses recorded Open-Meteo fixtures and the deterministic stand-in LLM, so it is
 identical on every run. Mode B adds live Open-Meteo calls and the real model.
@@ -43,7 +43,7 @@ and after. The file was then removed.
 ```
 SKIPPED evals/test_cases.py:166: no situational SOP fired on live data today. Scanned ->
 Bhopal: 24h=0.0mm p=1016.4hPa, Mumbai: 24h=0.0mm p=1015.1hPa, Chennai: 24h=1.3mm
-p=1015.4hPa, Kolkata: 24h=0.9mm p=1013.9hPa, Guwahati: 24h=0.0mm p=1013.4hPa,
+p=1015.4hPa, Kolkata: 24h=0.9mm p=1014.0hPa, Guwahati: 24h=0.0mm p=1013.4hPa,
 Thiruvananthapuram: 24h=3.6mm p=1015.4hPa
 ```
 
@@ -80,7 +80,7 @@ checked red-green: each fails with its fix temporarily removed and passes with i
 | Medium | "next week" silently answered as "right now"; a follow-up naming no time reset to "now" | unsupported period -> fixed question listing supported ones; follow-ups keep the session's period |
 | Medium | Intake output `{}` became an intent full of defaults and carried on | required keys enforced |
 | Medium | Unknown category, blank advice/title, and a `cite_as` naming a different SOP all loaded; a numeric YAML key raised a bare `TypeError` | validated, each failing startup with the file named |
-| Medium | The per-turn decision log was emitted at INFO with no handler - invisible under uvicorn | logging configured in `main.py`; `test_the_decision_log_is_printed_when_the_api_runs` checks it in a fresh process |
+| Medium | The per-turn decision log was emitted at INFO with no handler - invisible under uvicorn | logging configured in `main.py`; `test_the_decision_log_is_printed_by_every_entry_point` checks the API and the embedded Streamlit app, each in a fresh process |
 | Medium | Session store unbounded; a follow-up sent mid-turn read the session before that turn was recorded (lost place and activity), and history could interleave | LRU cap (500), per-session lock; `test_a_follow_up_sent_mid_turn_waits_for_that_turn_and_builds_on_it` |
 | Medium | The 11th-SOP test stopped at the matcher; `get_policy` bound the SOP dir at import | end-to-end test; directory read at call time |
 | Medium | Frontend: 90 s timeout shorter than a slow turn (the UI would say "unreachable" while the backend still answered and recorded the turn), no loading state, every error reported as "could not be reached" | 300 s configurable timeout, spinner, HTTP vs connection errors distinguished |

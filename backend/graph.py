@@ -43,6 +43,12 @@ def install_llm() -> None:
         llm.set_fake(fake_llm)
 
 
+def configure_logging() -> None:
+    """Make the per-turn decision log visible: the API and the embedded Streamlit UI
+    both call this. A no-op when something already configured the root logger."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
 # --------------------------------------------------------------------------- #
 # Nodes that only wrap deterministic code
 # --------------------------------------------------------------------------- #
@@ -174,22 +180,32 @@ def answer(
     memory: Optional[Memory] = None,
     graph: Any = None,
 ) -> dict[str, Any]:
-    """Run one turn and update session memory. Returns the raw final state."""
+    """Run one turn and update session memory. Returns the raw final state.
+
+    A turn over a cap (see Memory.admit) gets fixed text and branch `limited` without
+    running the graph, and leaves the session's history and facts as they were."""
     memory = memory or MEMORY
     graph = graph or GRAPH
     session = memory.get(session_id)
     with session.lock:  # two requests on one session run one after the other, never interleaved
-        state: GraphState = {
-            "session_id": session_id,
-            "user_message": message,
-            "history": list(session.history),
-            "established_facts": dict(session.facts),
-            "trace": [],
-        }
-        final = graph.invoke(state)
-        session.add_turn("user", message)
-        session.add_turn("assistant", final.get("reply", ""))
-        memory.record(session, final)
+        refusal = memory.admit(session)
+        if refusal:
+            final: dict[str, Any] = {
+                "reply": refusal, "branch": "limited", "matched_sop_ids": [],
+                "trace": ["limit: turn cap reached; graph not run, no model or weather call"],
+            }
+        else:
+            state: GraphState = {
+                "session_id": session_id,
+                "user_message": message,
+                "history": list(session.history),
+                "established_facts": dict(session.facts),
+                "trace": [],
+            }
+            final = graph.invoke(state)
+            session.add_turn("user", message)
+            session.add_turn("assistant", final.get("reply", ""))
+            memory.record(session, final)
 
     snapshot = final.get("weather")
     guard = final.get("guard_report") or {}

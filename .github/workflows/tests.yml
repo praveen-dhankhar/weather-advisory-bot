@@ -1,0 +1,20 @@
+name: tests
+
+# Mode A only: recorded fixtures and the stand-in LLM, so no key and no network are
+# needed. Streamlit Community Cloud redeploys main on every push; this is the check
+# to watch. The live suite (--run-live) needs a model key and runs locally.
+on:
+  push:
+  pull_request:
+
+jobs:
+  offline-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pytest

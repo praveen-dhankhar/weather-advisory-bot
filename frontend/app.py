@@ -23,11 +23,17 @@ EMBEDDED = os.getenv("EMBEDDED", "0").strip() in {"1", "true", "yes"}
 # timeout would show an error while the backend still answers and records the turn.
 BACKEND_TIMEOUT = float(os.getenv("BACKEND_TIMEOUT", "300"))
 
+if EMBEDDED:  # no FastAPI process here, so this process prints the decision log itself
+    from backend.graph import configure_logging
+
+    configure_logging()
+
 st.set_page_config(page_title="Outdoor safety advisor", page_icon="🌦", layout="centered")
 st.title("Outdoor safety advisor")
 st.caption(
-    "Every answer comes from a written SOP and cites it. Live Open-Meteo data. "
-    "If no SOP covers your question, the bot says so instead of guessing."
+    "Every answer comes from a written SOP and cites it. If no SOP covers your question, "
+    "the bot says so instead of guessing. Live weather data by "
+    "[Open-Meteo.com](https://open-meteo.com) (CC BY 4.0)."
 )
 
 if "session_id" not in st.session_state:

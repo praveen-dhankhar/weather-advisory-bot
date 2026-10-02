@@ -792,22 +792,67 @@ def test_a_follow_up_sent_mid_turn_waits_for_that_turn_and_builds_on_it(bot):
     assert history[2]["content"] == "what about this evening instead?"
 
 
-def test_the_decision_log_is_printed_when_the_api_runs():
+ENTRY_POINTS = {
+    "api": ("from fastapi.testclient import TestClient\n"
+            "import backend.main as api\n"
+            "TestClient(api.app).post('/chat', json={'message': 'is it safe to cycle in Pune?'})\n"),
+    "embedded ui": ("from streamlit.testing.v1 import AppTest\n"
+                    f"app = AppTest.from_file({str(ROOT / 'frontend' / 'app.py')!r}, default_timeout=60).run()\n"
+                    "app.chat_input[0].set_value('is it safe to cycle in Pune?').run()\n"),
+}
+
+
+@pytest.mark.parametrize("entry", sorted(ENTRY_POINTS))
+def test_the_decision_log_is_printed_by_every_entry_point(entry):
     """DEFECT: the per-turn decision log was emitted at INFO with no handler configured,
-    so under uvicorn it was silently dropped.
-    CHECKS a fresh Python process - no pytest log capture - that imports the API and sends
-    one request, with the weather switched off and the stand-in model, so nothing leaves
-    the machine.
+    so under uvicorn it was dropped - and the embedded Streamlit app, which is what runs on
+    Community Cloud, never configured logging at all.
+    CHECKS a fresh Python process per entry point - no pytest log capture - sending one
+    question with the weather switched off and the stand-in model, so nothing leaves the
+    machine.
     PASS = stderr carries the `advisory` INFO line with the session and the branch."""
-    script = ("from fastapi.testclient import TestClient\n"
-              "import backend.main as api\n"
-              "TestClient(api.app).post('/chat', json={'session_id': 'logprobe', "
-              "'message': 'is it safe to cycle in Pune?'})\n")
-    env = {**os.environ, "LLM_PROVIDER": "fake", "SIMULATE_WEATHER_DOWN": "1"}
-    run = subprocess.run([sys.executable, "-c", script], cwd=ROOT, env=env,
+    env = {**os.environ, "LLM_PROVIDER": "fake", "SIMULATE_WEATHER_DOWN": "1", "EMBEDDED": "1"}
+    run = subprocess.run([sys.executable, "-c", ENTRY_POINTS[entry]], cwd=ROOT, env=env,
                          capture_output=True, text=True, timeout=120)
     assert run.returncode == 0, run.stderr[-2000:]
-    assert "INFO advisory: session=logprobe branch=fail" in run.stderr, run.stderr[-2000:]
+    assert re.search(r"INFO advisory: session=\S+ branch=fail", run.stderr), run.stderr[-2000:]
+
+
+def test_a_session_over_its_turn_cap_is_refused_without_model_or_weather_calls(bot):
+    """CHECKS the per-session cap that protects a public deployment's model key.
+    PASS = the third turn of a two-turn session gets the fixed limit text and branch
+    `limited` with no model call, no forecast fetch and its history untouched, while a
+    new session is still answered."""
+    bot.memory = Memory(per_session=2)
+    bot.use("high_wind")
+    bot.ask("is it safe to cycle to work in Pune right now?", session_id="capped")
+    bot.ask("what about this evening instead?", session_id="capped")
+    fetched = bot.fetches
+    bot.count_llm_jobs()
+    refused = bot.ask("and tomorrow morning?", session_id="capped")
+    assert refused["branch"] == "limited" and refused["reply"] == fixed.SESSION_LIMIT_TEXT
+    assert refused["matched_sop_ids"] == [] and bot.llm_calls == [] and bot.fetches == fetched
+    assert len(bot.memory.get("capped").history) == 4
+    assert bot.ask("is it safe to cycle to work in Pune right now?", session_id="new")["branch"] == "compose"
+
+
+def test_the_hourly_cap_refuses_every_session_until_the_hour_rolls_over(bot, monkeypatch):
+    """CHECKS the global hourly cap, the real guard on the key and on Open-Meteo's daily
+    quota (a new session id does not reset it).
+    PASS = with room for two turns an hour, a third session is refused with the busy
+    text, and admitted again once the hour has passed."""
+    from backend import memory as memory_module
+
+    clock = [1000.0]
+    monkeypatch.setattr(memory_module, "monotonic", lambda: clock[0])
+    bot.memory = Memory(per_hour=2)
+    bot.use("high_wind")
+    question = "is it safe to cycle to work in Pune right now?"
+    bot.ask(question, session_id="a"), bot.ask(question, session_id="b")
+    refused = bot.ask(question, session_id="c")
+    assert refused["branch"] == "limited" and refused["reply"] == fixed.BUSY_TEXT
+    clock[0] += 3601
+    assert bot.ask(question, session_id="c")["branch"] == "compose"
 
 
 @pytest.fixture
@@ -831,6 +876,19 @@ def test_api_gives_each_caller_without_a_session_id_a_fresh_session(client):
     assert stranger["facts"]["place"] is None and stranger["sop_ids"] == []
     again = client.post("/chat", json={"session_id": mine, "message": "what about this evening instead?"}).json()
     assert again["facts"]["place"] == "Pune, Maharashtra, India" and again["sop_ids"]
+
+
+def test_api_answers_a_capped_turn_with_http_429(client, monkeypatch):
+    """CHECKS the API's side of the turn caps: a refused turn is HTTP 429 with the fixed
+    text, not a 200 that looks like an answer.
+    PASS = first call 200, second call 429 carrying the busy text."""
+    from backend import graph
+
+    monkeypatch.setattr(graph, "MEMORY", Memory(per_hour=1))
+    question = {"message": "is it safe to cycle to work in Pune today?"}
+    assert client.post("/chat", json=question).status_code == 200
+    capped = client.post("/chat", json=question)
+    assert capped.status_code == 429 and capped.json()["detail"] == fixed.BUSY_TEXT
 
 
 @pytest.mark.parametrize("body", [

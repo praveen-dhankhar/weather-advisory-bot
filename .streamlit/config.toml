@@ -1,0 +1,7 @@
+# Streamlit settings, also used by Streamlit Community Cloud (it reads this file from
+# the repository root).
+
+[client]
+# Viewers of the public app see a generic error, never a traceback; the full
+# traceback still goes to the server log ("Manage app" on Community Cloud).
+showErrorDetails = "none"

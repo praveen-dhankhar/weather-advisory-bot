@@ -6,19 +6,18 @@ with the file name instead of quietly disabling a rule.
 
 from __future__ import annotations
 
-import logging
 import uuid
 from typing import Any, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
-from backend.graph import GRAPH, answer, facts_for_api, install_llm
+from backend.graph import GRAPH, answer, configure_logging, facts_for_api, install_llm
 from backend.loader import get_policy
 
 # The per-turn decision log ("advisory" logger: branch, SOPs, place, guard verdict)
 # is INFO; without this it would be emitted and dropped.
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+configure_logging()
 
 POLICY = get_policy()  # fail loudly at startup
 install_llm()
@@ -77,6 +76,8 @@ def chat(request: ChatRequest) -> ChatResponse:
     # one caller's place and activity into another caller's follow-up.
     session_id = request.session_id or uuid.uuid4().hex
     final = answer(request.message, session_id=session_id, graph=GRAPH)
+    if final.get("branch") == "limited":  # a turn cap refused it before any model or weather call
+        raise HTTPException(status_code=429, detail=final["reply"])
     return ChatResponse(
         session_id=session_id,
         reply=final.get("reply", ""),
