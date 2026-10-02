@@ -155,10 +155,12 @@ it is a reading of forecast data rather than an authority's warning.
 
 ## 7. Honest gaps
 
-- **Geocoding takes the first hit.** "Bhopal" has three Open-Meteo matches; the bot
-  takes the first and tells you which place it used (`ResolvedLocation.label` is in
-  every reply and in `facts.place`). It does not disambiguate, and a user who means
-  the smaller Bhopal in Uttar Pradesh will get the wrong forecast.
+- **Which place was used is always stated, because the choice can still be wrong.**
+  `ResolvedLocation.label` appears in every reply and in `facts.place`. Where several
+  candidates share a name within one country the most populous wins silently, so
+  someone meaning the smaller Bhopal in Uttar Pradesh still gets the larger one - the
+  reply names it, which is the only mitigation. (The brief's stated default is "take
+  the first result"; this deviates from it on purpose - see the entry below.)
 - **Open-Meteo is not an alert source.** Everything the bot says about "a system" is
   inference from a forecast model. Nobody should evacuate on its say-so, and the
   situational SOP text says as much.
