@@ -14,11 +14,32 @@ from pathlib import Path
 
 import httpx
 import streamlit as st
+from dotenv import load_dotenv
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+
+def settings_from_secrets() -> None:
+    """On Streamlit Community Cloud the settings are secrets, but this file and the
+    backend read os.environ. Streamlit copies root-level string and number secrets over
+    only if the secrets file already exists when the server starts (secrets saved after
+    the first boot never arrive), and never booleans. So copy them on every run; a value
+    already in the environment wins."""
+    try:
+        items = st.secrets.items()
+    except FileNotFoundError:  # no secrets file: a local run, configured by .env or the shell
+        return
+    for key, value in items:
+        if isinstance(value, (str, int, float, bool)):
+            os.environ.setdefault(key, str(value))
+
+
+settings_from_secrets()
+load_dotenv(ROOT / ".env")  # the frontend's settings live there too, not only the backend's
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
-EMBEDDED = os.getenv("EMBEDDED", "0").strip() in {"1", "true", "yes"}
+EMBEDDED = os.getenv("EMBEDDED", "0").strip().lower() in {"1", "true", "yes"}
 # A turn is up to four LLM calls (intake, fuzzy, compose, one guard retry); a short
 # timeout would show an error while the backend still answers and records the turn.
 BACKEND_TIMEOUT = float(os.getenv("BACKEND_TIMEOUT", "300"))
@@ -111,7 +132,8 @@ if prompt and prompt.strip():
         except httpx.HTTPError as exc:
             payload = failure_payload(
                 f"The backend at {BACKEND_URL} could not be reached ({type(exc).__name__}), so "
-                "nothing was advised. Is it running?"
+                "nothing was advised. Start it with `uvicorn backend.main:app`, or set "
+                "EMBEDDED=1 to run the bot inside this app."
             )
         except Exception as exc:  # embedded mode: the UI must never die on a backend bug
             payload = failure_payload(f"The bot hit an internal error ({type(exc).__name__}), so "

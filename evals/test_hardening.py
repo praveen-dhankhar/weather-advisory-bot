@@ -1006,3 +1006,37 @@ def test_frontend_keeps_a_thread_and_a_session_and_shows_failures(bot, monkeypat
     down.chat_input[0].set_value("is it safe to cycle in Pune?").run()
     reply = down.session_state["turns"][-1]["content"]
     assert "could not be reached" in reply and "nothing was advised" in reply
+    assert "EMBEDDED=1" in reply  # says how to fix it
+
+
+def test_frontend_takes_its_settings_from_cloud_secrets(monkeypatch):
+    """CHECKS the Community Cloud path. There the settings are secrets, and Streamlit puts
+    them in the environment only if the secrets file existed when the server started, and
+    never booleans; otherwise the app stayed in HTTP mode and answered "The backend at
+    http://127.0.0.1:8000 could not be reached". AppTest hands the app its secrets the
+    same way, without touching the environment.
+    PASS = a boolean EMBEDDED secret alone puts the app in embedded mode."""
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.delenv("EMBEDDED", raising=False)
+    app = AppTest.from_file(str(ROOT / "frontend" / "app.py"), default_timeout=60)
+    app.secrets["EMBEDDED"] = True
+    app.run()
+    assert not app.exception
+    assert "Mode: embedded graph" in [m.value for m in app.sidebar.markdown]
+
+
+def test_frontend_reads_its_settings_from_dotenv(tmp_path, monkeypatch):
+    """CHECKS that the frontend settings .env.example lists (EMBEDDED, BACKEND_URL,
+    BACKEND_TIMEOUT) are read from .env. Only the backend loaded .env, so EMBEDDED=1 there
+    still left the UI calling a backend that was not running.
+    PASS = EMBEDDED=1 in the .env above a copy of the app puts it in embedded mode."""
+    from streamlit.testing.v1 import AppTest
+
+    (tmp_path / "frontend").mkdir()
+    shutil.copy(ROOT / "frontend" / "app.py", tmp_path / "frontend" / "app.py")
+    (tmp_path / ".env").write_text("EMBEDDED=1\n")
+    monkeypatch.delenv("EMBEDDED", raising=False)
+    app = AppTest.from_file(str(tmp_path / "frontend" / "app.py"), default_timeout=60).run()
+    assert not app.exception
+    assert "Mode: embedded graph" in [m.value for m in app.sidebar.markdown]

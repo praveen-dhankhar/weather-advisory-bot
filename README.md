@@ -338,10 +338,13 @@ so a slow model turn never meets an HTTP proxy timeout and there is no second se
    MAX_TURNS_PER_HOUR = "120"
    ```
 
-   Keep every value a quoted string. Streamlit copies root-level string and number
-   secrets into the environment the backend reads (`os.getenv`), and skips booleans.
+   The app copies these root-level secrets into the environment the backend reads
+   (`os.getenv`) on every run. Streamlit alone does that only for a secrets file that
+   existed at boot, so secrets saved after the first deploy would never arrive.
 4. Deploy. The sidebar must say **Mode: embedded graph**; "Manage app" logs show one
-   `INFO advisory: session=... branch=...` line per turn.
+   `INFO advisory: session=... branch=...` line per turn. If it says
+   `Mode: http://127.0.0.1:8000` and answers "The backend ... could not be reached",
+   the secrets are missing: add them under **Settings → Secrets**, then reload the page.
 
 To rehearse locally, put the same text in `.streamlit/secrets.toml` (gitignored) and
 run `streamlit run frontend/app.py` with no env vars set. That is the same bootstrap

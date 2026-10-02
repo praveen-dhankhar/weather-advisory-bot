@@ -6,7 +6,7 @@ in 4 categories.
 
 | mode | command | result |
 | --- | --- | --- |
-| A | `pytest` | **152 passed, 8 skipped** in ~6 s. The 8 skips are exactly the tests marked `live`. |
+| A | `pytest` | **154 passed, 8 skipped** in ~6 s. The 8 skips are exactly the tests marked `live`. |
 | B | `pytest -o addopts= -q -rs --run-live --eval-report=evals/REPORT.md` | **159 passed, 1 skipped** in 363 s (6 min). The skip is the live storm scan - no storm on the run date, explained below. |
 
 Mode A uses recorded Open-Meteo fixtures and the deterministic stand-in LLM, so it is
